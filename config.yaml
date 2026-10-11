@@ -1,0 +1,42 @@
+input: null                 # đường dẫn video, có thể truyền qua CLI
+output: null
+
+model:
+  name: realesr-general-x4v3
+  path: models/realesr-general-x4v3.onnx
+  scale: 4                  # scale gốc của model
+  target_scale: 2           # scale đầu ra mong muốn (resize phần còn lại)
+  precision: fp16           # fp16 | fp32
+
+inference:
+  provider: auto            # auto | cuda | tensorrt | cpu
+  tile_size: 256            # 0 = không chia tile
+  tile_overlap: 16
+  batch_size: 1
+
+frame_saving:
+  enable_dedup: true
+  dedup_threshold: 0.5      # MSE nhỏ hơn ngưỡng này thì coi là khung trùng
+  enable_scene_detect: false
+
+thermal:
+  enabled: true
+  poll_interval_sec: 2
+  temp_soft_c: 70           # vượt ngưỡng này: bắt đầu throttle
+  temp_hard_c: 80           # vượt ngưỡng này: tạm dừng đến khi nguội
+  temp_resume_c: 65         # nguội xuống ngưỡng này thì chạy lại
+  max_gpu_util_pct: 85
+  throttle_sleep_ms_min: 0
+  throttle_sleep_ms_max: 500
+  power_limit_watts: null   # null = không đụng; cần quyền admin nếu đặt
+
+encode:
+  codec: auto               # auto | h264_nvenc | hevc_nvenc | libx264
+  crf_or_cq: 21
+  preset: p4                # preset NVENC
+  copy_audio: true
+
+checkpoint:
+  enabled: true
+  dir: .ecoup_state
+  interval_frames: 300
