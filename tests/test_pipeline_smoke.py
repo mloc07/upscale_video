@@ -109,3 +109,28 @@ def test_pipeline_resume(smoke_video: Path, tmp_path: Path):
     assert meta_out.width == 320
     assert meta_out.height == 240
     assert meta_out.has_audio is True
+
+
+def test_pipeline_with_post_processing(smoke_video: Path, tmp_path: Path):
+    """Test pipeline run with post-processing enabled (recover_detail, sharpen, film_grain)."""
+    from ecoup.config import PostProcessConfig
+
+    out_video = tmp_path / "post_processed_output.mp4"
+    cfg = AppConfig(
+        model=ModelConfig(scale=2, target_scale=2),
+        checkpoint=CheckpointConfig(enabled=False),
+        encode=EncodeConfig(codec="auto", copy_audio=True),
+        post_process=PostProcessConfig(
+            recover_detail=0.2,
+            sharpen=0.25,
+            film_grain=0.015,
+        ),
+    )
+
+    pipeline = UpscalePipeline(config=cfg, custom_upscale_fn=mock_upscale_2x)
+    pipeline.run(input_path=smoke_video, output_path=out_video, resume=False)
+
+    assert out_video.exists()
+    meta_out = get_video_metadata(out_video)
+    assert meta_out.width == 320
+    assert meta_out.height == 240

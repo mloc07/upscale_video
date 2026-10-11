@@ -130,6 +130,21 @@ class CheckpointConfig:
 
 
 @dataclass
+class PostProcessConfig:
+    recover_detail: float = 0.15     # 0.0 - 0.5 (blend original Lanczos to suppress hallucination & restore lip texture)
+    sharpen: float = 0.20            # 0.0 - 1.0 (unsharp mask edge enhancement)
+    film_grain: float = 0.01         # 0.0 - 0.05 (natural photonic grain to eliminate plastic skin)
+
+    def validate(self) -> None:
+        if not (0.0 <= self.recover_detail <= 1.0):
+            raise ValueError(f"post_process.recover_detail must be between 0.0 and 1.0, got {self.recover_detail}.")
+        if not (0.0 <= self.sharpen <= 2.0):
+            raise ValueError(f"post_process.sharpen must be between 0.0 and 2.0, got {self.sharpen}.")
+        if not (0.0 <= self.film_grain <= 0.2):
+            raise ValueError(f"post_process.film_grain must be between 0.0 and 0.2, got {self.film_grain}.")
+
+
+@dataclass
 class AppConfig:
     input: Optional[str] = None
     output: Optional[str] = None
@@ -139,6 +154,7 @@ class AppConfig:
     thermal: ThermalConfig = field(default_factory=ThermalConfig)
     encode: EncodeConfig = field(default_factory=EncodeConfig)
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
+    post_process: PostProcessConfig = field(default_factory=PostProcessConfig)
 
     def validate(self) -> None:
         self.model.validate()
@@ -147,6 +163,7 @@ class AppConfig:
         self.thermal.validate()
         self.encode.validate()
         self.checkpoint.validate()
+        self.post_process.validate()
 
 
 def load_config(config_path: Optional[str | Path] = None) -> AppConfig:
@@ -167,6 +184,7 @@ def load_config(config_path: Optional[str | Path] = None) -> AppConfig:
     thermal_cfg = ThermalConfig(**raw.get("thermal", {}))
     encode_cfg = EncodeConfig(**raw.get("encode", {}))
     checkpoint_cfg = CheckpointConfig(**raw.get("checkpoint", {}))
+    post_process_cfg = PostProcessConfig(**raw.get("post_process", {}))
 
     app_cfg = AppConfig(
         input=raw.get("input"),
@@ -177,6 +195,7 @@ def load_config(config_path: Optional[str | Path] = None) -> AppConfig:
         thermal=thermal_cfg,
         encode=encode_cfg,
         checkpoint=checkpoint_cfg,
+        post_process=post_process_cfg,
     )
 
     app_cfg.validate()

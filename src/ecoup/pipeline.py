@@ -9,6 +9,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
+import cv2
 import numpy as np
 
 from ecoup.checkpoint import CheckpointManager
@@ -83,7 +84,6 @@ class UpscalePipeline:
                 f"Không có inference engine cho model '{self.config.model.path}'. "
                 "Tự động chuyển sang chế độ nội suy Lanczos4 chất lượng cao."
             )
-            import cv2
             def lanczos_fallback(tile: np.ndarray) -> np.ndarray:
                 th, tw = tile.shape[:2]
                 return cv2.resize(tile, (tw * scale, th * scale), interpolation=cv2.INTER_LANCZOS4)
@@ -163,6 +163,32 @@ class UpscalePipeline:
                         tile_size=self.config.inference.tile_size,
                         tile_overlap=self.config.inference.tile_overlap,
                     )
+
+                    # Post-processing: Recover Original Detail / Sharpen / Film Grain
+                    if hasattr(self.config, "post_process"):
+                        pp = self.config.post_process
+                        # 1. Recover Original Detail (Alpha Blend with Lanczos base to suppress hallucination & restore lip texture)
+                        if pp.recover_detail > 0.0:
+                            base = cv2.resize(frame, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
+                            out_frame = cv2.addWeighted(
+                                out_frame, 1.0 - pp.recover_detail,
+                                base, pp.recover_detail,
+                                0
+                            )
+                        # 2. Adaptive Sharpening (Unsharp Mask)
+                        if pp.sharpen > 0.0:
+                            blurred = cv2.GaussianBlur(out_frame, (0, 0), sigmaX=1.5)
+                            out_frame = cv2.addWeighted(
+                                out_frame, 1.0 + pp.sharpen,
+                                blurred, -pp.sharpen,
+                                0
+                            )
+                        # 3. Film Grain (Suppress doll/plastic look)
+                        if pp.film_grain > 0.0:
+                            noise = np.random.normal(0, pp.film_grain * 255.0, (out_h, out_w, 1)).astype(np.float32)
+                            noisy = out_frame.astype(np.float32) + noise
+                            out_frame = np.clip(noisy, 0, 255).astype(np.uint8)
+
                     dedup.register_result(out_frame)
 
                 # Segment writer initialization

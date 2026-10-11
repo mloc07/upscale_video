@@ -30,7 +30,16 @@ from PyQt6.QtWidgets import (
 )
 
 from ecoup.cli import check_gpu, _ensure_path_refreshed
-from ecoup.config import AppConfig, ModelConfig, ThermalConfig, FrameSavingConfig, CheckpointConfig, EncodeConfig, InferenceConfig
+from ecoup.config import (
+    AppConfig,
+    ModelConfig,
+    ThermalConfig,
+    FrameSavingConfig,
+    CheckpointConfig,
+    EncodeConfig,
+    InferenceConfig,
+    PostProcessConfig,
+)
 from ecoup.engine.onnx_engine import OnnxUpscaleEngine
 from ecoup.pipeline import UpscalePipeline
 from ecoup.video_io import get_video_metadata, VideoMetadata
@@ -318,6 +327,44 @@ class MainWindow(QMainWindow):
         chk_row.addStretch()
 
         set_layout.addLayout(chk_row)
+
+        # Realism & Artifact Control Row
+        realism_row = QHBoxLayout()
+        realism_row.setSpacing(16)
+
+        # Recover Original Detail
+        r_box = QHBoxLayout()
+        r_box.addWidget(QLabel("Khôi phục chi tiết gốc (Chống bệt da/vẽ bậy):"))
+        self.recover_spin = QSpinBox()
+        self.recover_spin.setRange(0, 50)
+        self.recover_spin.setValue(20)
+        self.recover_spin.setSuffix(" %")
+        self.recover_spin.setToolTip("Trộn texture video gốc để xóa bỏ hiện tượng AI vẽ bậy hoa văn lạ hoặc bệt môi/da tượng sáp")
+        r_box.addWidget(self.recover_spin)
+        realism_row.addLayout(r_box)
+
+        # Sharpening
+        s_box = QHBoxLayout()
+        s_box.addWidget(QLabel("Làm nét viền (Sharpen):"))
+        self.sharpen_spin = QSpinBox()
+        self.sharpen_spin.setRange(0, 100)
+        self.sharpen_spin.setValue(20)
+        self.sharpen_spin.setSuffix(" %")
+        self.sharpen_spin.setToolTip("Tăng độ tương phản cạnh giúp viền rõ ràng, khử mờ nhòe")
+        s_box.addWidget(self.sharpen_spin)
+        realism_row.addLayout(s_box)
+
+        # Film Grain
+        g_box = QHBoxLayout()
+        self.grain_chk = QCheckBox("Bù hạt tự nhiên (Film Grain)")
+        self.grain_chk.setChecked(True)
+        self.grain_chk.setToolTip("Phủ lớp hạt vi mô tự nhiên giúp da và môi sống động như quay máy ảnh thật, khử cảm giác búp bê nhựa")
+        g_box.addWidget(self.grain_chk)
+        realism_row.addLayout(g_box)
+
+        realism_row.addStretch()
+        set_layout.addLayout(realism_row)
+
         root_layout.addWidget(settings_box)
 
         # 4. Hardware Monitor Box
@@ -520,6 +567,11 @@ class MainWindow(QMainWindow):
             encode=EncodeConfig(
                 codec="h264_nvenc" if "NVENC H.264" in self.encoder_combo.currentText() else "libx264",
                 copy_audio=True,
+            ),
+            post_process=PostProcessConfig(
+                recover_detail=self.recover_spin.value() / 100.0,
+                sharpen=self.sharpen_spin.value() / 100.0,
+                film_grain=0.015 if self.grain_chk.isChecked() else 0.0,
             ),
         )
 
