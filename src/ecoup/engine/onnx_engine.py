@@ -67,6 +67,14 @@ class OnnxUpscaleEngine(UpscaleEngine):
         else:
             self.input_dtype = np.float32
 
+        # Auto-detect native scale factor via dummy probe
+        try:
+            probe_in = np.zeros((1, 3, 32, 32), dtype=self.input_dtype)
+            probe_out = self.session.run([self.output_name], {self.input_name: probe_in})[0]
+            self.scale = int(round(probe_out.shape[2] / 32))
+        except Exception:
+            self.scale = 4
+
     def upscale(self, frame: np.ndarray) -> np.ndarray:
         """Upscale RGB frame (H, W, 3) uint8 using ONNX session."""
         if self.session is None:

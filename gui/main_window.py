@@ -132,6 +132,9 @@ class PipelineWorker(QThread):
                 self.log_sig.emit(f"Đang nạp mô hình AI: {model_path.name}...")
                 self.engine = OnnxUpscaleEngine()
                 self.engine.load(model_path, precision=self.config.model.precision, provider=self.config.inference.provider)
+                if hasattr(self.engine, "scale") and self.engine.scale > 0:
+                    self.config.model.scale = self.engine.scale
+                    self.log_sig.emit(f"Mô hình đã sẵn sàng (Native Scale: {self.engine.scale}x).")
             else:
                 self.log_sig.emit(f"[Thông báo] Không tìm thấy file model AI '{model_path.name}'. Đang chạy chế độ nội suy Lanczos4 chất lượng cao...")
                 import cv2
@@ -244,9 +247,11 @@ class MainWindow(QMainWindow):
         m_col.addWidget(QLabel("Mô hình AI:"))
         self.model_combo = QComboBox()
         self.model_combo.addItems([
-            "realesr-animevideov3 (FP16)",
-            "realesr-general-x4v3 (FP16)",
-            "Compact-SPAN (FP16)",
+            "NomosUni 2x (Siêu nét, video đời thực - Nhẹ 2.3MB)",
+            "SPAN 2x (Siêu nhanh, mát GPU - Nhẹ 1.6MB)",
+            "realesr-general-x4v3 (4x, Khử nhiễu mịn da - 4.9MB)",
+            "realesr-animevideov3 (4x, Hoạt hình / 2D - 2.5MB)",
+            "RealESRGAN x2plus (2x, Chi tiết cao cấp - Nặng 67MB)",
         ])
         m_col.addWidget(self.model_combo)
         dropdown_row.addLayout(m_col)
@@ -453,18 +458,26 @@ class MainWindow(QMainWindow):
             return
 
         model_text = self.model_combo.currentText().lower()
-        if "anime" in model_text:
+        if "nomosuni" in model_text:
+            model_name = "2xNomosUni_compact_otf_medium"
+            model_file = "models/2xNomosUni_compact_otf_medium.onnx"
+            model_scale = 2
+        elif "span" in model_text:
+            model_name = "2x-spanx2-ch48"
+            model_file = "models/2x-spanx2-ch48.onnx"
+            model_scale = 2
+        elif "x2plus" in model_text:
+            model_name = "2x-realesrgan-x2plus"
+            model_file = "models/2x-realesrgan-x2plus.onnx"
+            model_scale = 2
+        elif "anime" in model_text:
             model_name = "realesr-animevideov3"
             model_file = "models/realesr-animevideov3.onnx"
             model_scale = 4
-        elif "general" in model_text:
+        else:
             model_name = "realesr-general-x4v3"
             model_file = "models/realesr-general-x4v3.onnx"
             model_scale = 4
-        else:
-            model_name = "span_x2"
-            model_file = "models/span_x2.onnx"
-            model_scale = 2
 
         target_scale = 4 if "4x" in self.scale_combo.currentText() else 2
 

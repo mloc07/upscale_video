@@ -64,7 +64,10 @@ class UpscalePipeline:
             f"Input video: {meta.width}x{meta.height} @ {meta.fps:.2f} fps ({meta.total_frames} frames), Audio: {meta.has_audio}"
         )
 
-        scale = self.config.model.scale
+        if self.engine is not None and hasattr(self.engine, "scale") and self.engine.scale > 0:
+            scale = self.engine.scale
+        else:
+            scale = self.config.model.scale
         target_scale = float(self.config.model.target_scale)
         out_w = int(round(meta.width * target_scale))
         out_h = int(round(meta.height * target_scale))

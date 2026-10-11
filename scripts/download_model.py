@@ -10,14 +10,29 @@ from pathlib import Path
 
 # Verified public ONNX models
 MODELS = {
+    "2xNomosUni_compact_otf_medium": {
+        "url": "https://huggingface.co/notaneimu/onnx-image-models/resolve/main/2xNomosUni_compact_otf_medium.onnx",
+        "desc": "NomosUni Compact 2x (2.3MB) - Siêu nét video & ảnh thực tế, nhẹ và tối ưu",
+        "scale": 2,
+    },
+    "2x-spanx2-ch48": {
+        "url": "https://huggingface.co/notaneimu/onnx-image-models/resolve/main/2x-spanx2-ch48.onnx",
+        "desc": "SPAN Compact 2x (1.6MB) - Siêu nhanh, mát GPU, tiết kiệm điện năng",
+        "scale": 2,
+    },
+    "2x-realesrgan-x2plus": {
+        "url": "https://huggingface.co/notaneimu/onnx-image-models/resolve/main/2x-realesrgan-x2plus.onnx",
+        "desc": "Real-ESRGAN x2plus (67MB) - Tái tạo chi tiết & texture sắc sảo cao cấp",
+        "scale": 2,
+    },
     "realesr-animevideov3": {
         "url": "https://huggingface.co/nimjinwei/designerplatform-models/resolve/main/realesr-animevideov3.onnx",
-        "desc": "Real-ESRGAN Anime Video V3 (Compact/SRVGGNet) - Optimal for anime & cartoons",
+        "desc": "Real-ESRGAN Anime Video V3 (Compact 4x) - Hoạt hình & Anime 2D",
         "scale": 4,
     },
     "realesr-general-x4v3": {
         "url": "https://huggingface.co/Heliosoph/realesrgan-onnx/resolve/main/realesr-general-x4v3.onnx",
-        "desc": "Real-ESRGAN General X4 V3 (Compact) - Optimal for real-life footage & general video",
+        "desc": "Real-ESRGAN General X4 V3 (Compact 4x) - Khử nhiễu mịn da, cảnh đời thực",
         "scale": 4,
     },
 }
