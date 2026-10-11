@@ -130,6 +130,15 @@ class CheckpointConfig:
 
 
 @dataclass
+class PreProcessConfig:
+    denoise: float = 0.30     # 0.0 - 1.0 (Edge-preserving bilateral filter to clean artifacts before AI)
+
+    def validate(self) -> None:
+        if not (0.0 <= self.denoise <= 1.0):
+            raise ValueError(f"pre_process.denoise must be between 0.0 and 1.0, got {self.denoise}.")
+
+
+@dataclass
 class PostProcessConfig:
     recover_detail: float = 0.15     # 0.0 - 0.5 (blend original Lanczos to suppress hallucination & restore lip texture)
     sharpen: float = 0.20            # 0.0 - 1.0 (unsharp mask edge enhancement)
@@ -154,6 +163,7 @@ class AppConfig:
     thermal: ThermalConfig = field(default_factory=ThermalConfig)
     encode: EncodeConfig = field(default_factory=EncodeConfig)
     checkpoint: CheckpointConfig = field(default_factory=CheckpointConfig)
+    pre_process: PreProcessConfig = field(default_factory=PreProcessConfig)
     post_process: PostProcessConfig = field(default_factory=PostProcessConfig)
 
     def validate(self) -> None:
@@ -163,6 +173,7 @@ class AppConfig:
         self.thermal.validate()
         self.encode.validate()
         self.checkpoint.validate()
+        self.pre_process.validate()
         self.post_process.validate()
 
 
@@ -184,6 +195,7 @@ def load_config(config_path: Optional[str | Path] = None) -> AppConfig:
     thermal_cfg = ThermalConfig(**raw.get("thermal", {}))
     encode_cfg = EncodeConfig(**raw.get("encode", {}))
     checkpoint_cfg = CheckpointConfig(**raw.get("checkpoint", {}))
+    pre_process_cfg = PreProcessConfig(**raw.get("pre_process", {}))
     post_process_cfg = PostProcessConfig(**raw.get("post_process", {}))
 
     app_cfg = AppConfig(
@@ -195,6 +207,7 @@ def load_config(config_path: Optional[str | Path] = None) -> AppConfig:
         thermal=thermal_cfg,
         encode=encode_cfg,
         checkpoint=checkpoint_cfg,
+        pre_process=pre_process_cfg,
         post_process=post_process_cfg,
     )
 

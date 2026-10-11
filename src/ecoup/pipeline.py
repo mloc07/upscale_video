@@ -149,14 +149,22 @@ class UpscalePipeline:
                 # Thermal governor check & throttle
                 governor.wait_if_needed()
 
+                # Pre-processing: Edge-preserving Bilateral Filter to wash away compression noise before AI
+                input_for_ai = frame
+                if hasattr(self.config, "pre_process") and self.config.pre_process.denoise > 0.0:
+                    strength = self.config.pre_process.denoise
+                    sigma = 15.0 + strength * 45.0
+                    denoised = cv2.bilateralFilter(frame, d=5, sigmaColor=sigma, sigmaSpace=sigma)
+                    input_for_ai = cv2.addWeighted(denoised, strength, frame, 1.0 - strength, 0) if strength < 1.0 else denoised
+
                 # Check frame deduplication
-                is_dup, prev_result = dedup.check_duplicate(frame)
+                is_dup, prev_result = dedup.check_duplicate(input_for_ai)
                 if is_dup and prev_result is not None:
                     out_frame = prev_result
                 else:
                     # AI inference with tiling and blend
                     out_frame = upscale_with_tiling(
-                        frame,
+                        input_for_ai,
                         upscale_fn=upscale_tile,
                         scale=scale,
                         target_scale=target_scale,

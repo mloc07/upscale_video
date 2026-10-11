@@ -38,6 +38,7 @@ from ecoup.config import (
     CheckpointConfig,
     EncodeConfig,
     InferenceConfig,
+    PreProcessConfig,
     PostProcessConfig,
 )
 from ecoup.engine.onnx_engine import OnnxUpscaleEngine
@@ -330,11 +331,22 @@ class MainWindow(QMainWindow):
 
         # Realism & Artifact Control Row
         realism_row = QHBoxLayout()
-        realism_row.setSpacing(16)
+        realism_row.setSpacing(14)
+
+        # Pre-Denoise
+        d_box = QHBoxLayout()
+        d_box.addWidget(QLabel("Khử nhiễu gốc (Pre-Denoise):"))
+        self.pre_denoise_spin = QSpinBox()
+        self.pre_denoise_spin.setRange(0, 100)
+        self.pre_denoise_spin.setValue(30)
+        self.pre_denoise_spin.setSuffix(" %")
+        self.pre_denoise_spin.setToolTip("Lọc sạch hạt nhiễu nén trước khi AI xử lý, ngăn chặn AI khuếch đại hạt rác và vẽ bậy")
+        d_box.addWidget(self.pre_denoise_spin)
+        realism_row.addLayout(d_box)
 
         # Recover Original Detail
         r_box = QHBoxLayout()
-        r_box.addWidget(QLabel("Khôi phục chi tiết gốc (Chống bệt da/vẽ bậy):"))
+        r_box.addWidget(QLabel("Khôi phục gốc (Recover):"))
         self.recover_spin = QSpinBox()
         self.recover_spin.setRange(0, 50)
         self.recover_spin.setValue(20)
@@ -567,6 +579,9 @@ class MainWindow(QMainWindow):
             encode=EncodeConfig(
                 codec="h264_nvenc" if "NVENC H.264" in self.encoder_combo.currentText() else "libx264",
                 copy_audio=True,
+            ),
+            pre_process=PreProcessConfig(
+                denoise=self.pre_denoise_spin.value() / 100.0,
             ),
             post_process=PostProcessConfig(
                 recover_detail=self.recover_spin.value() / 100.0,

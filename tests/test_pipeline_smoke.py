@@ -111,15 +111,16 @@ def test_pipeline_resume(smoke_video: Path, tmp_path: Path):
     assert meta_out.has_audio is True
 
 
-def test_pipeline_with_post_processing(smoke_video: Path, tmp_path: Path):
-    """Test pipeline run with post-processing enabled (recover_detail, sharpen, film_grain)."""
-    from ecoup.config import PostProcessConfig
+def test_pipeline_with_pre_and_post_processing(smoke_video: Path, tmp_path: Path):
+    """Test pipeline run with pre-denoise and post-processing enabled."""
+    from ecoup.config import PreProcessConfig, PostProcessConfig
 
     out_video = tmp_path / "post_processed_output.mp4"
     cfg = AppConfig(
         model=ModelConfig(scale=2, target_scale=2),
         checkpoint=CheckpointConfig(enabled=False),
         encode=EncodeConfig(codec="auto", copy_audio=True),
+        pre_process=PreProcessConfig(denoise=0.3),
         post_process=PostProcessConfig(
             recover_detail=0.2,
             sharpen=0.25,
