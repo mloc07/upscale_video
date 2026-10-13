@@ -52,6 +52,7 @@ class OnnxUpscaleEngine(UpscaleEngine):
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
         self.session = ort.InferenceSession(model_str, sess_options=opts, providers=chosen_providers)
+        self.active_provider = self.session.get_providers()[0] if self.session.get_providers() else "Unknown"
         self.precision = precision.lower()
 
         # Retrieve input / output metadata

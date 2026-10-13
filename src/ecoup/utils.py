@@ -47,3 +47,36 @@ def format_bytes(bytes_count: int | float) -> str:
             return f"{bytes_count:.1f} {unit}"
         bytes_count /= 1024.0
     return f"{bytes_count:.1f} PB"
+
+
+def get_gpu_vram_info() -> tuple[float, float, str]:
+    """Return (vram_used_gb, vram_total_gb, gpu_name) or (0.0, 0.0, '')."""
+    # 1. Try pynvml (NVIDIA Management Library)
+    try:
+        import pynvml  # type: ignore
+        pynvml.nvmlInit()
+        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+        name = pynvml.nvmlDeviceGetName(handle)
+        if isinstance(name, bytes):
+            name = name.decode("utf-8")
+        info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        used_gb = info.used / (1024 ** 3)
+        total_gb = info.total / (1024 ** 3)
+        return (used_gb, total_gb, str(name))
+    except Exception:
+        pass
+
+    # 2. Try PyTorch CUDA mem_get_info
+    try:
+        import torch  # type: ignore
+        if torch.cuda.is_available():
+            free, total = torch.cuda.mem_get_info()
+            used_gb = (total - free) / (1024 ** 3)
+            total_gb = total / (1024 ** 3)
+            name = torch.cuda.get_device_name(0)
+            return (used_gb, total_gb, str(name))
+    except Exception:
+        pass
+
+    return (0.0, 0.0, "")
+
