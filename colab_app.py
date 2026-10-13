@@ -137,7 +137,10 @@ def run_upscale(
     out_path = output_dir / f"{in_path.stem}_upscaled.mp4"
 
     # Scale mapping
-    target_scale = 4 if "4" in str(target_scale_choice) else 2
+    if "ccsr" in model_choice.lower():
+        target_scale = 4
+    else:
+        target_scale = 4 if "4" in str(target_scale_choice) else 2
 
     # Tile mapping
     if "toàn khung" in tile_choice.lower() or "full" in tile_choice.lower():
