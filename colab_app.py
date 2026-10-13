@@ -54,6 +54,7 @@ def run_upscale(
     input_file_path: Optional[str],
     model_choice: str,
     target_scale_choice: str,
+    tile_choice: str,
     pre_denoise_pct: int,
     recover_detail_pct: int,
     sharpen_pct: int,
@@ -71,6 +72,17 @@ def run_upscale(
 
     # Scale mapping
     target_scale = 4 if "4x" in target_scale_choice else 2
+
+    # Tile mapping
+    if "toàn khung" in tile_choice.lower():
+        tile_sz = 0
+        tile_ov = 0
+    elif "256" in tile_choice:
+        tile_sz = 256
+        tile_ov = 16
+    else:
+        tile_sz = 512
+        tile_ov = 16
 
     # Model resolution
     engine = None
@@ -137,8 +149,8 @@ def run_upscale(
         ),
         inference=InferenceConfig(
             provider="auto",
-            tile_size=256,
-            tile_overlap=16,
+            tile_size=tile_sz,
+            tile_overlap=tile_ov,
         ),
         thermal=ThermalConfig(enabled=False),  # Cloud GPU can run at full power
         frame_saving=FrameSavingConfig(enable_dedup=True),
@@ -219,6 +231,11 @@ def create_ui():
                     value="1080p (Scale 2x)",
                     label="Độ phân giải đích",
                 )
+                tile_dd = gr.Dropdown(
+                    choices=["512x512 (Khuyên dùng trên Colab T4)", "256x256 (Tiết kiệm VRAM)", "Toàn khung (Nhanh nhất - Không chia tile)"],
+                    value="512x512 (Khuyên dùng trên Colab T4)",
+                    label="Chia Tile (Tốc độ)",
+                )
 
             with gr.Row():
                 denoise_sl = gr.Slider(
@@ -272,7 +289,7 @@ def create_ui():
 
         btn_run.click(
             fn=run_upscale,
-            inputs=[in_file, model_dd, scale_dd, denoise_sl, recover_sl, sharpen_sl, grain_cb],
+            inputs=[in_file, model_dd, scale_dd, tile_dd, denoise_sl, recover_sl, sharpen_sl, grain_cb],
             outputs=[out_file, status_output],
         )
 
