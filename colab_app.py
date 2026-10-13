@@ -25,6 +25,13 @@ import numpy as np
 # Ensure src is on sys.path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
+# Avoid UnicodeEncodeError on Windows consoles (cp1252) when printing Vietnamese text
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 from ecoup.config import (
     AppConfig,
     ModelConfig,
@@ -81,7 +88,6 @@ def get_available_models():
         "realesr-general-x4v3 (4x, Khử nhiễu mịn da 4.9MB)",
         "realesr-animevideov3 (4x, Hoạt hình / 2D / Anime 2.5MB)",
         "SPAN 2x (Siêu nhanh, mát GPU 1.6MB)",
-        "CCSR v2 (Content-Consistent Diffusion Prior)",
     ]
 
 
