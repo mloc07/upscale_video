@@ -21,6 +21,12 @@ class CcsrUpscaleEngine(UpscaleEngine):
         self.device = device
         self.scale = 2
         self.model = None
+        if model_path is not None:
+            self.load(model_path, provider=device)
+
+    def load(self, model_path: str | Path, precision: str = "fp16", provider: str = "auto") -> None:
+        """Load CCSR model weights and initialize inference session."""
+        self.device = "cuda" if provider in ("auto", "cuda") else "cpu"
         self._init_engine(model_path)
 
     def _init_engine(self, model_path: Optional[str | Path]):

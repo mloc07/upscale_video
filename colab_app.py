@@ -84,6 +84,7 @@ def run_upscale(
         try:
             from ecoup.engine.ccsr_engine import CcsrUpscaleEngine
             engine = CcsrUpscaleEngine()
+            engine.load(model_path="models/ccsr_v2.pth", provider="cuda")
             model_scale = 2
             model_name = "ccsr_v2"
         except Exception as e:

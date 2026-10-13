@@ -35,8 +35,6 @@ class OnnxUpscaleEngine(UpscaleEngine):
                 chosen_providers.append("DmlExecutionProvider")
             if "CUDAExecutionProvider" in available:
                 chosen_providers.append("CUDAExecutionProvider")
-            if "TensorrtExecutionProvider" in available:
-                chosen_providers.append("TensorrtExecutionProvider")
             if "CPUExecutionProvider" in available:
                 chosen_providers.append("CPUExecutionProvider")
         elif provider in ("dml", "directml"):
