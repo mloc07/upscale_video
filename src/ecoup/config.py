@@ -34,6 +34,7 @@ class InferenceConfig:
     tile_size: int = 256
     tile_overlap: int = 16
     batch_size: int = 1
+    control_strength: float = 0.75   # 0.0 - 2.0 (ControlNet conditioning scale; 0.7-0.8 for crisp textures, 1.0 for strict adherence)
 
     def validate(self) -> None:
         valid_providers = ("auto", "cuda", "tensorrt", "cpu")
@@ -49,6 +50,8 @@ class InferenceConfig:
             )
         if self.batch_size <= 0:
             raise ValueError(f"inference.batch_size must be >= 1, got {self.batch_size}.")
+        if not (0.0 <= self.control_strength <= 2.0):
+            raise ValueError(f"inference.control_strength must be in range [0.0, 2.0], got {self.control_strength}.")
 
 
 @dataclass

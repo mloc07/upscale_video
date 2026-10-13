@@ -55,3 +55,16 @@ thermal:
     assert loaded.model.scale == 2
     assert loaded.model.precision == "fp32"
     assert loaded.thermal.temp_soft_c == 65
+
+
+def test_control_strength_validation():
+    cfg = AppConfig(inference=InferenceConfig(control_strength=0.75))
+    cfg.validate()
+    assert cfg.inference.control_strength == 0.75
+
+    with pytest.raises(ValueError, match="control_strength"):
+        AppConfig(inference=InferenceConfig(control_strength=-0.1)).validate()
+
+    with pytest.raises(ValueError, match="control_strength"):
+        AppConfig(inference=InferenceConfig(control_strength=2.5)).validate()
+

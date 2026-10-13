@@ -118,6 +118,7 @@ def run_upscale(
     model_choice: str,
     target_scale_choice: str,
     tile_choice: str,
+    control_strength: float,
     pre_denoise_pct: int,
     recover_detail_pct: int,
     sharpen_pct: int,
@@ -160,7 +161,7 @@ def run_upscale(
 
     if "ccsr" in model_choice.lower():
         from ecoup.engine.ccsr_engine import CcsrUpscaleEngine
-        engine = CcsrUpscaleEngine()
+        engine = CcsrUpscaleEngine(control_strength=control_strength)
         model_name = "CCSR_v2"
         model_scale = 2
         engine.load(model_path="preset/models", precision="fp16", provider="cuda")
@@ -210,6 +211,7 @@ def run_upscale(
             provider="auto",
             tile_size=tile_sz,
             tile_overlap=tile_ov,
+            control_strength=control_strength,
         ),
         thermal=ThermalConfig(enabled=False),
         frame_saving=FrameSavingConfig(enable_dedup=("ccsr" not in model_choice.lower())),
@@ -340,6 +342,13 @@ def create_ui():
                 )
 
             with gr.Row():
+                ctrl_strength_sl = gr.Slider(
+                    minimum=0.1,
+                    maximum=1.5,
+                    value=0.75,
+                    step=0.05,
+                    label="Độ ép cấu trúc (Control Strength)",
+                )
                 sharpen_sl = gr.Slider(
                     minimum=0,
                     maximum=100,
@@ -375,7 +384,7 @@ def create_ui():
         # Handle Run & Cancel
         run_event = btn_run.click(
             fn=run_upscale,
-            inputs=[in_file, model_dd, scale_dd, tile_dd, denoise_sl, recover_sl, sharpen_sl, grain_cb],
+            inputs=[in_file, model_dd, scale_dd, tile_dd, ctrl_strength_sl, denoise_sl, recover_sl, sharpen_sl, grain_cb],
             outputs=[out_file, status_output],
         )
 

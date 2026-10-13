@@ -21,9 +21,15 @@ from ecoup.color_fix import adain_color_fix
 class CcsrUpscaleEngine(UpscaleEngine):
     """CCSR AI Inference Engine using PyTorch and Diffusion Priors."""
 
-    def __init__(self, model_path: Optional[str | Path] = None, device: str = "cuda"):
+    def __init__(
+        self,
+        model_path: Optional[str | Path] = None,
+        device: str = "cuda",
+        control_strength: float = 0.75,
+    ):
         self.device = device
         self.scale = 2
+        self.control_strength = control_strength
         self.pipeline = None
         self.is_ccsr_pipeline = False
         self.active_provider = "PyTorch CUDA (CCSR Diffusion)"
@@ -217,49 +223,61 @@ class CcsrUpscaleEngine(UpscaleEngine):
         self.pipeline = pipe
         print(f"[CCSR Engine] Khởi động CCSR Diffusion thành công trên {self.device}!")
 
-    def upscale(self, frame: np.ndarray) -> np.ndarray:
+    def upscale(self, frame: np.ndarray, control_strength: Optional[float] = None) -> np.ndarray:
         """Upscale RGB frame (H, W, 3) uint8 using CCSR Diffusion."""
         if self.pipeline is None:
             raise RuntimeError("CCSR Pipeline chưa được khởi tạo. Hãy gọi load() trước.")
 
         import torch
+        import inspect
+
         pil_img = Image.fromarray(frame)
         w, h = pil_img.size
         target_w, target_h = w * self.scale, h * self.scale
 
+        strength = float(control_strength if control_strength is not None else self.control_strength)
         gen = torch.Generator(device=self.device).manual_seed(42)
+
+        sig = inspect.signature(self.pipeline.__call__)
+
+        # Build dynamic pipeline parameters
+        pipe_kwargs = {
+            "prompt": "",
+            "image": pil_img,
+            "generator": gen,
+            "num_inference_steps": 1,
+            "guidance_scale": 1.0,
+            "output_type": "pil",
+        }
+        if "controlnet_conditioning_scale" in sig.parameters:
+            pipe_kwargs["controlnet_conditioning_scale"] = strength
+        elif "conditioning_scale" in sig.parameters:
+            pipe_kwargs["conditioning_scale"] = strength
 
         with torch.inference_mode():
             if self.is_ccsr_pipeline:
                 # Official CCSR-v2 pipeline call
                 # Signature: (t_max, t_min, tile_diffusion, tile_size, tile_stride, prompt, image, ...)
-                _, res = self.pipeline(
+                ccsr_args = (
                     0.6667,  # t_max
                     0.0,     # t_min (must reach 0.0 for full reverse diffusion sharpness)
                     False,   # tile_diffusion (processed frame by frame)
                     512,     # tile_size
                     256,     # tile_stride
-                    prompt="",
-                    image=pil_img,
-                    generator=gen,
-                    num_inference_steps=1,
-                    guidance_scale=1.0,
-                    start_steps=999,
-                    start_point="lr",
-                    use_vae_encode_condition=True,
-                    output_type="pil",
                 )
+                ccsr_kwargs = {
+                    **pipe_kwargs,
+                    "start_steps": 999,
+                    "start_point": "lr",
+                    "use_vae_encode_condition": True,
+                }
+                filtered_kwargs = {k: v for k, v in ccsr_kwargs.items() if k in sig.parameters}
+                _, res = self.pipeline(*ccsr_args, **filtered_kwargs)
                 out_pil = res.images[0]
             else:
                 # Standard Diffusers fallback call
-                res = self.pipeline(
-                    prompt="",
-                    image=pil_img,
-                    generator=gen,
-                    num_inference_steps=1,
-                    guidance_scale=1.0,
-                    output_type="pil",
-                )
+                filtered_kwargs = {k: v for k, v in pipe_kwargs.items() if k in sig.parameters}
+                res = self.pipeline(**filtered_kwargs)
                 out_pil = res.images[0]
 
         out_np = np.array(out_pil)

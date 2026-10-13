@@ -79,6 +79,8 @@ class UpscalePipeline:
         if self.custom_upscale_fn is not None:
             upscale_tile = self.custom_upscale_fn
         elif self.engine is not None:
+            if hasattr(self.engine, "control_strength") and hasattr(self.config.inference, "control_strength"):
+                self.engine.control_strength = self.config.inference.control_strength
             upscale_tile = self.engine.upscale
         else:
             self.logger.warning(
