@@ -297,9 +297,20 @@ class VideoWriter:
                 "-map", "0:v:0",
             ])
 
+        # Color flags: Map full-range RGB to limited-range BT.709 YUV420P and write VUI metadata
+        # to ensure standard brightness and contrast across all browsers (Chrome/Safari) and media players
+        color_flags = [
+            "-vf", "scale=in_range=full:in_color_matrix=bt709:out_range=limited:out_color_matrix=bt709",
+            "-color_primaries", "bt709",
+            "-color_trc", "bt709",
+            "-colorspace", "bt709",
+            "-color_range", "tv",
+        ]
+
         # Codec specific encoding flags
         if chosen_codec in ("h264_nvenc", "hevc_nvenc"):
             cmd.extend([
+                *color_flags,
                 "-c:v", chosen_codec,
                 "-preset", self.preset,
                 "-cq", str(self.crf_or_cq),
@@ -307,6 +318,7 @@ class VideoWriter:
             ])
         else:
             cmd.extend([
+                *color_flags,
                 "-c:v", "libx264",
                 "-preset", "medium",
                 "-crf", str(self.crf_or_cq),

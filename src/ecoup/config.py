@@ -140,11 +140,14 @@ class PreProcessConfig:
 
 @dataclass
 class PostProcessConfig:
+    color_fix: bool = True           # Adaptive Instance Normalization to match original luminance & prevent darkening
     recover_detail: float = 0.15     # 0.0 - 0.5 (blend original Lanczos to suppress hallucination & restore lip texture)
     sharpen: float = 0.20            # 0.0 - 1.0 (unsharp mask edge enhancement)
     film_grain: float = 0.01         # 0.0 - 0.05 (natural photonic grain to eliminate plastic skin)
 
     def validate(self) -> None:
+        if not isinstance(self.color_fix, bool):
+            raise ValueError("post_process.color_fix must be a boolean.")
         if not (0.0 <= self.recover_detail <= 1.0):
             raise ValueError(f"post_process.recover_detail must be between 0.0 and 1.0, got {self.recover_detail}.")
         if not (0.0 <= self.sharpen <= 2.0):

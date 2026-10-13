@@ -217,6 +217,7 @@ def run_upscale(
         encode=EncodeConfig(codec="auto", copy_audio=True),
         pre_process=PreProcessConfig(denoise=pre_denoise_pct / 100.0),
         post_process=PostProcessConfig(
+            color_fix=True,
             recover_detail=recover_detail_pct / 100.0,
             sharpen=sharpen_pct / 100.0,
             film_grain=0.015 if film_grain_checked else 0.0,

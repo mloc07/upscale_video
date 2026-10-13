@@ -15,6 +15,7 @@ import numpy as np
 from PIL import Image
 
 from ecoup.engine.base import UpscaleEngine
+from ecoup.color_fix import adain_color_fix
 
 
 class CcsrUpscaleEngine(UpscaleEngine):
@@ -262,6 +263,9 @@ class CcsrUpscaleEngine(UpscaleEngine):
         # Scale alignment if needed
         if out_np.shape[1] != target_w or out_np.shape[0] != target_h:
             out_np = cv2.resize(out_np, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
+
+        # Eliminate Stable Diffusion VAE decoding luminance drop and color drift (official CCSR AdaIN)
+        out_np = adain_color_fix(out_np, frame)
 
         return out_np
 

@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 
 from ecoup.checkpoint import CheckpointManager
+from ecoup.color_fix import adain_color_fix
 from ecoup.config import AppConfig
 from ecoup.dedup import FrameDeduplicator
 from ecoup.engine.base import UpscaleEngine
@@ -172,9 +173,13 @@ class UpscalePipeline:
                         tile_overlap=self.config.inference.tile_overlap,
                     )
 
-                    # Post-processing: Recover Original Detail / Sharpen / Film Grain
+                    # Post-processing: Color Fix / Recover Original Detail / Sharpen / Film Grain
                     if hasattr(self.config, "post_process"):
                         pp = self.config.post_process
+                        # 0. Color & Luminance Alignment (AdaIN Color Fix to prevent darkening)
+                        if getattr(pp, "color_fix", False):
+                            out_frame = adain_color_fix(out_frame, frame)
+
                         # 1. Recover Original Detail (Alpha Blend with Lanczos base to suppress hallucination & restore lip texture)
                         if pp.recover_detail > 0.0:
                             base = cv2.resize(frame, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
