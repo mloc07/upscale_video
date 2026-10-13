@@ -1,11 +1,10 @@
 """Gradio Web Application for Eco Video Upscaler (Optimized for Google Colab and remote devices).
 
-Utilitarian, minimalist interface designed for Phones and Laptops without video previews:
-1. Input File Picker
-2. Configuration Controls (Model, Tile, Filters)
-3. Action Buttons: Run & Cancel
-4. Progress Bar & Realtime Hardware/VRAM Telemetry
-5. Output Download Button
+Giao diện phục chế và nâng cấp độ phân giải video AI:
+- Thiết kế tối giản, tập trung vào công việc
+- Hỗ trợ mô hình khuếch tán CCSR v2 và các mô hình ONNX gia tốc GPU
+- Hỗ trợ hủy tiến trình tức thì
+- Giám sát trạng thái và tài nguyên thời gian thực
 """
 
 from __future__ import annotations
@@ -25,7 +24,7 @@ import numpy as np
 # Ensure src is on sys.path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-# Avoid UnicodeEncodeError on Windows consoles (cp1252) when printing Vietnamese text
+# Avoid UnicodeEncodeError on Windows consoles (cp1252)
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")
@@ -51,7 +50,7 @@ from ecoup.video_io import get_video_metadata
 # Global tracker for cancel functionality
 active_pipeline: Optional[UpscalePipeline] = None
 
-# Verified models mapping: model_key -> (filename, download_url, default_scale)
+# Verified ONNX models mapping: model_key -> (filename, download_url, default_scale)
 MODEL_REGISTRY = {
     "nomosuni": (
         "2xNomosUni_compact_otf_medium.onnx",
@@ -83,25 +82,25 @@ MODEL_REGISTRY = {
 
 def get_available_models():
     return [
-        "NomosUni 2x (Mặc định - Nét nhất, chi tiết chân thực 2.3MB)",
-        "RealESRGAN x2plus (Chi tiết cao cấp 67MB - Khuyên dùng trên Cloud)",
-        "realesr-general-x4v3 (4x, Khử nhiễu mịn da 4.9MB)",
-        "realesr-animevideov3 (4x, Hoạt hình / 2D / Anime 2.5MB)",
-        "SPAN 2x (Siêu nhanh, mát GPU 1.6MB)",
+        "CCSR v2 (Diffusion Model)",
+        "RealESRGAN x2plus (2x)",
+        "NomosUni 2x",
+        "RealESRGAN 4x (General)",
+        "RealESRGAN 4x (Anime)",
+        "SPAN 2x",
     ]
 
 
 def ensure_model_file(model_key: str) -> tuple[Path, int]:
-    """Ensure ONNX model file exists on disk, auto-downloading if necessary."""
+    """Ensure ONNX model file exists on disk, downloading if necessary."""
     if model_key not in MODEL_REGISTRY:
         model_key = "nomosuni"
     filename, url, scale = MODEL_REGISTRY[model_key]
     dest = Path("models") / filename
     if not dest.exists():
         dest.parent.mkdir(parents=True, exist_ok=True)
-        print(f"[Colab App] Model chưa có sẵn, đang tải tự động từ: {url}")
+        print(f"[Model Loader] Đang tải mô hình {filename} từ {url}...")
         urllib.request.urlretrieve(url, str(dest))
-        print(f"[Colab App] Tải model thành công: {dest}")
     return dest, scale
 
 
@@ -110,7 +109,7 @@ def cancel_upscale():
     global active_pipeline
     if active_pipeline is not None:
         active_pipeline.cancel()
-        return "⏹️ Đã gửi lệnh hủy! Đang dừng an toàn và giải phóng GPU..."
+        return "Đã gửi lệnh hủy. Đang dừng an toàn và giải phóng GPU..."
     return "Không có tiến trình nào đang chạy."
 
 
@@ -125,7 +124,7 @@ def run_upscale(
     film_grain_checked: bool,
     progress=gr.Progress(track_tqdm=False),
 ):
-    """Execute video upscaling pipeline with real-time status and cancellation support."""
+    """Execute video upscaling pipeline."""
     global active_pipeline
 
     if not input_file_path or not os.path.exists(input_file_path):
@@ -137,18 +136,16 @@ def run_upscale(
     out_path = output_dir / f"{in_path.stem}_upscaled.mp4"
 
     # Scale mapping
-    target_scale = 4 if "4x" in target_scale_choice else 2
+    target_scale = 4 if "4" in str(target_scale_choice) else 2
 
-    # Tile mapping:
-    # On Cloud (Colab T4 15GB VRAM), full-frame (tile_sz=0) processes the entire frame at once,
-    # utilizing 1.5 - 3.5GB VRAM and running 3x-5x faster.
-    if "toàn khung" in tile_choice.lower() or "không chia" in tile_choice.lower():
+    # Tile mapping
+    if "toàn khung" in tile_choice.lower() or "full" in tile_choice.lower():
         tile_sz = 0
         tile_ov = 0
     elif "256" in tile_choice:
         tile_sz = 256
         tile_ov = 16
-    else:  # 512x512
+    else:  # 512
         tile_sz = 512
         tile_ov = 16
 
@@ -159,54 +156,43 @@ def run_upscale(
     custom_fn = None
     model_name = "nomosuni"
     model_scale = 2
+    model_file_str = "models/model.onnx"
 
     if "ccsr" in model_choice.lower():
-        # Check if CCSR weights and dependencies are available
-        ccsr_weights = Path("models/real-world_ccsr-fp16.safetensors")
-        ccsr_v2_pth = Path("models/ccsr_v2.pth")
-        if ccsr_weights.exists() or ccsr_v2_pth.exists():
-            try:
-                from ecoup.engine.ccsr_engine import CcsrUpscaleEngine
-                engine = CcsrUpscaleEngine()
-                engine.load(model_path=str(ccsr_v2_pth if ccsr_v2_pth.exists() else ccsr_weights), provider="cuda")
-                model_scale = 2
-                model_name = "ccsr_v2"
-            except Exception as e:
-                print(f"[Colab App] CCSR engine error: {e}. Sử dụng RealESRGAN x2plus sắc nét.")
-                mf, model_scale = ensure_model_file("x2plus")
-                model_name = "RealESRGAN_x2plus"
-                engine = OnnxUpscaleEngine()
-                engine.load(mf, provider="auto")
-        else:
-            print("[Colab App] Trọng số CCSR (~3.5GB) chưa có trong models/. Tự động dùng RealESRGAN x2plus (67MB).")
-            mf, model_scale = ensure_model_file("x2plus")
-            model_name = "RealESRGAN_x2plus"
-            engine = OnnxUpscaleEngine()
-            engine.load(mf, provider="auto")
+        from ecoup.engine.ccsr_engine import CcsrUpscaleEngine
+        engine = CcsrUpscaleEngine()
+        model_name = "CCSR_v2"
+        model_scale = 2
+        engine.load(model_path="preset/models", precision="fp16", provider="cuda")
+        model_file_str = "preset/models/controlnet"
     elif "x2plus" in model_choice.lower():
         mf, model_scale = ensure_model_file("x2plus")
         model_name = "RealESRGAN_x2plus"
+        model_file_str = str(mf)
         engine = OnnxUpscaleEngine()
         engine.load(mf, provider="auto")
     elif "anime" in model_choice.lower():
         mf, model_scale = ensure_model_file("anime")
         model_name = "realesr-animevideov3"
+        model_file_str = str(mf)
         engine = OnnxUpscaleEngine()
         engine.load(mf, provider="auto")
     elif "span" in model_choice.lower():
         mf, model_scale = ensure_model_file("span")
         model_name = "SPAN_2x"
+        model_file_str = str(mf)
         engine = OnnxUpscaleEngine()
         engine.load(mf, provider="auto")
     elif "general" in model_choice.lower():
         mf, model_scale = ensure_model_file("general")
         model_name = "realesr-general-x4v3"
+        model_file_str = str(mf)
         engine = OnnxUpscaleEngine()
         engine.load(mf, provider="auto")
     else:
-        # Default NomosUni 2x
         mf, model_scale = ensure_model_file("nomosuni")
         model_name = "NomosUni_2x"
+        model_file_str = str(mf)
         engine = OnnxUpscaleEngine()
         engine.load(mf, provider="auto")
 
@@ -216,7 +202,7 @@ def run_upscale(
     cfg = AppConfig(
         model=ModelConfig(
             name=model_name,
-            path=str(mf) if "mf" in locals() else "models/model.onnx",
+            path=model_file_str,
             scale=model_scale,
             target_scale=target_scale,
         ),
@@ -225,7 +211,7 @@ def run_upscale(
             tile_size=tile_sz,
             tile_overlap=tile_ov,
         ),
-        thermal=ThermalConfig(enabled=False),  # Cloud GPU runs at full power
+        thermal=ThermalConfig(enabled=False),
         frame_saving=FrameSavingConfig(enable_dedup=True),
         checkpoint=CheckpointConfig(enabled=False),
         encode=EncodeConfig(codec="auto", copy_audio=True),
@@ -245,7 +231,7 @@ def run_upscale(
         mins = int(eta_sec // 60)
         secs = int(eta_sec % 60)
 
-        # Query hardware GPU VRAM metrics
+        # Telemetry
         used_gb, total_gb, gpu_name = get_gpu_vram_info()
         vram_info = ""
         if total_gb > 0:
@@ -253,16 +239,10 @@ def run_upscale(
             vram_info = f" • VRAM: {used_gb:.1f}/{total_gb:.1f}GB ({vram_pct:.0f}%)"
 
         prov = getattr(engine, "active_provider", "GPU")
-        if "cuda" in prov.lower():
-            prov_label = "CUDA (NVIDIA T4)"
-        elif "dml" in prov.lower():
-            prov_label = "DirectML"
-        else:
-            prov_label = prov
 
         last_status = (
             f"Khung hình {frame_idx}/{total_frames} ({int(pct * 100)}%) "
-            f"• {fps:.1f} fps • Còn lại: {mins:02d}:{secs:02d}{vram_info} • GPU: {prov_label}"
+            f"• {fps:.1f} fps • Còn lại: {mins:02d}:{secs:02d}{vram_info} • {prov}"
         )
         progress(pct, desc=last_status)
 
@@ -275,73 +255,71 @@ def run_upscale(
     active_pipeline = pipeline
 
     try:
-        progress(0.02, desc="Đang phân tích video và khởi động GPU...")
+        progress(0.02, desc="Đang phân tích video...")
         pipeline.run(in_path, out_path, resume=False)
     except Exception as e:
         if pipeline._cancelled:
-            return None, "⏹️ Quá trình xử lý đã được người dùng HỦY BỎ thành công."
+            return None, "Quá trình xử lý đã được hủy thành công."
         raise e
     finally:
         active_pipeline = None
 
     if pipeline._cancelled:
-        return None, "⏹️ Quá trình xử lý đã được người dùng HỦY BỎ thành công."
+        return None, "Quá trình xử lý đã được hủy thành công."
 
-    progress(1.0, desc="Hoàn tất upscale! Video đã sẵn sàng tải về.")
-    return str(out_path), f"Hoàn tất thành công! Video đã lưu: {out_path.name}"
+    progress(1.0, desc="Hoàn tất xử lý.")
+    return str(out_path), f"Hoàn tất. Video đã lưu: {out_path.name}"
 
 
 def create_ui():
-    """Create minimalist, utilitarian Gradio interface."""
+    """Create clean, modern Gradio interface."""
     custom_css = """
-    #title-box { text-align: center; margin-bottom: 8px; }
-    #title-box h1 { font-size: 1.5rem; margin-bottom: 4px; }
-    #title-box p { color: #888; font-size: 0.9rem; }
+    .gradio-container { max-width: 900px !important; margin: 0 auto !important; }
+    #header { text-align: center; margin-bottom: 16px; }
+    #header h1 { font-size: 1.8rem; font-weight: 700; margin-bottom: 4px; }
+    #header p { color: #64748b; font-size: 0.95rem; margin: 0; }
     .gr-button-primary { background: #2563eb !important; }
     .gr-button-stop { background: #dc2626 !important; color: white !important; }
     """
 
-    with gr.Blocks(title="Eco Video Upscaler (Cloud Edition)", theme=gr.themes.Base(), css=custom_css) as demo:
-        with gr.Column(elem_id="title-box"):
+    with gr.Blocks(title="Eco Video Upscaler", theme=gr.themes.Base(), css=custom_css) as demo:
+        with gr.Column(elem_id="header"):
             gr.Markdown(
                 """
-                # ⚡ Eco Video Upscaler (Cloud Edition)
-                Giao diện tinh gọn phục chế & siêu phân giải video trên Cloud GPU — Không tốn tài nguyên máy tính cá nhân.
+                # ⚡ Eco Video Upscaler
+                Hệ thống phục chế và nâng cấp độ phân giải video AI
                 """
             )
 
         with gr.Group():
-            gr.Markdown("### 1. Đầu vào:")
+            gr.Markdown("#### 1. Tệp nguồn")
             in_file = gr.File(
-                label="Chọn video từ thiết bị (Điện thoại hoặc Laptop)",
+                label="Tải lên Video",
                 file_types=[".mp4", ".mov", ".mkv", ".avi", ".webm"],
-                file_count="single",
                 type="filepath",
             )
 
         with gr.Group():
-            gr.Markdown("### 2. Cài đặt:")
+            gr.Markdown("#### 2. Cấu hình xử lý")
             with gr.Row():
                 model_dd = gr.Dropdown(
                     choices=get_available_models(),
-                    value="NomosUni 2x (Mặc định - Nét nhất, chi tiết chân thực 2.3MB)",
+                    value="CCSR v2 (Diffusion Model)",
                     label="Mô hình AI",
-                    info="Chọn RealESRGAN x2plus để tận dụng tối đa GPU Cloud, hoặc NomosUni 2x để nét tự nhiên.",
                 )
                 scale_dd = gr.Dropdown(
-                    choices=["1080p (Scale 2x)", "1440p (Scale 2x)", "4K (Scale 4x)"],
-                    value="1080p (Scale 2x)",
-                    label="Độ phân giải đích",
+                    choices=["2x", "4x"],
+                    value="2x",
+                    label="Tỉ lệ phóng đại",
                 )
                 tile_dd = gr.Dropdown(
                     choices=[
-                        "Toàn khung (Nhanh nhất - Tận dụng tối đa GPU Cloud 15GB VRAM)",
-                        "Tile 512x512 (Cân bằng GPU & VRAM)",
-                        "Tile 256x256 (Tiết kiệm VRAM - Dành cho máy yếu)",
+                        "Toàn khung (Full-Frame)",
+                        "Tile 512x512",
+                        "Tile 256x256",
                     ],
-                    value="Toàn khung (Nhanh nhất - Tận dụng tối đa GPU Cloud 15GB VRAM)",
-                    label="Chế độ xử lý (Chia Tile)",
-                    info="Trên Colab T4 (15GB VRAM), chế độ 'Toàn khung' chạy nhanh gấp 3-5 lần và ăn 1.5 - 3.5GB VRAM.",
+                    value="Toàn khung (Full-Frame)",
+                    label="Phân mảnh (Tile)",
                 )
 
             with gr.Row():
@@ -350,16 +328,14 @@ def create_ui():
                     maximum=100,
                     value=30,
                     step=5,
-                    label="Khử nhiễu gốc - Pre-Denoise (%)",
-                    info="Lọc sạch hạt rác nén trước khi AI vẽ để chống vẽ bậy",
+                    label="Khử nhiễu (Denoise %)",
                 )
                 recover_sl = gr.Slider(
                     minimum=0,
                     maximum=50,
                     value=20,
                     step=5,
-                    label="Khôi phục gốc - Recover Detail (%)",
-                    info="Trộn texture video gốc để chống bệt da/môi",
+                    label="Khôi phục gốc (Recover %)",
                 )
 
             with gr.Row():
@@ -368,32 +344,30 @@ def create_ui():
                     maximum=100,
                     value=20,
                     step=5,
-                    label="Làm nét viền - Sharpen (%)",
-                    info="Tăng tương phản cạnh giúp viền rõ ràng",
+                    label="Làm nét (Sharpen %)",
                 )
                 grain_cb = gr.Checkbox(
                     value=True,
-                    label="Bù hạt tự nhiên (Film Grain)",
-                    info="Khử cảm giác da búp bê sáp / silicon",
+                    label="Bù hạt phim (Film Grain)",
                 )
 
         with gr.Group():
-            gr.Markdown("### 3. Thực hiện:")
+            gr.Markdown("#### 3. Điều khiển")
             with gr.Row():
-                btn_run = gr.Button("🚀 BẮT ĐẦU UPSCALE", variant="primary", size="lg", scale=3)
-                btn_cancel = gr.Button("⏹️ HỦY BỎ / CANCEL", variant="stop", size="lg", scale=1)
+                btn_run = gr.Button("Bắt đầu xử lý", variant="primary", size="lg", scale=3)
+                btn_cancel = gr.Button("Hủy bỏ", variant="stop", size="lg", scale=1)
 
             status_output = gr.Textbox(
-                label="Trạng thái xử lý",
-                value="Sẵn sàng...",
+                label="Trạng thái",
+                value="Sẵn sàng",
                 interactive=False,
-                lines=2,
+                lines=1,
             )
 
         with gr.Group():
-            gr.Markdown("### 4. Thành phẩm:")
+            gr.Markdown("#### 4. Kết quả")
             out_file = gr.File(
-                label="Tệp video thành phẩm (Bấm vào đây để tải về thiết bị)",
+                label="Video thành phẩm",
                 interactive=False,
             )
 
@@ -422,7 +396,7 @@ def main():
 
     demo = create_ui()
     print("\n=======================================================")
-    print("🚀 Khởi động Eco Video Upscaler Cloud WebUI...")
+    print("🚀 Khởi động Eco Video Upscaler WebUI...")
     print("=======================================================\n")
     demo.launch(server_name=args.host, server_port=args.port, share=args.share)
 
