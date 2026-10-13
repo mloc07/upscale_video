@@ -24,6 +24,7 @@ class CcsrUpscaleEngine(UpscaleEngine):
         self.device = device
         self.scale = 2
         self.pipeline = None
+        self.is_ccsr_pipeline = False
         self.active_provider = "PyTorch CUDA (CCSR Diffusion)"
         if model_path is not None:
             self.load(model_path, provider=device)
@@ -44,7 +45,7 @@ class CcsrUpscaleEngine(UpscaleEngine):
 
         dtype = torch.float16 if self.device == "cuda" and precision == "fp16" else torch.float32
 
-        # Locate CCSR repository directory
+        # Locate CCSR repository directory and add to sys.path
         ccsr_dirs = [
             Path("ccsr_core"),
             Path("CCSR"),
@@ -58,10 +59,30 @@ class CcsrUpscaleEngine(UpscaleEngine):
                     sys.path.insert(0, resolved)
                 break
 
-        # Check weights path
-        ctrl_path = Path("preset/models/controlnet")
-        if not ctrl_path.exists():
-            ctrl_path = Path("models/controlnet")
+        # Locate local controlnet checkpoint with config.json
+        local_ctrl = None
+        ctrl_candidates = [
+            Path("preset/models/controlnet/controlnet"),
+            Path("preset/models/controlnet"),
+            Path("models/controlnet/controlnet"),
+            Path("models/controlnet"),
+        ]
+        for c in ctrl_candidates:
+            if (c / "config.json").exists():
+                local_ctrl = str(c)
+                break
+
+        # Locate local custom VAE checkpoint with config.json
+        local_vae = None
+        vae_candidates = [
+            Path("preset/models/controlnet/vae"),
+            Path("preset/models/vae"),
+            Path("models/vae"),
+        ]
+        for v in vae_candidates:
+            if (v / "config.json").exists():
+                local_vae = str(v)
+                break
 
         base_model_id = "stabilityai/stable-diffusion-2-1-base"
 
@@ -71,39 +92,56 @@ class CcsrUpscaleEngine(UpscaleEngine):
         except ImportError:
             raise RuntimeError("Thiếu thư viện diffusers / transformers. Vui lòng chạy lệnh pip install.")
 
-        # Attempt to load ControlNetModel
+        # Load ControlNet model
         controlnet = None
         try:
-            from models.controlnet import ControlNetModel
-            if ctrl_path.exists():
-                controlnet = ControlNetModel.from_pretrained(str(ctrl_path), torch_dtype=dtype)
-            else:
-                # Try Hugging Face directly
-                controlnet = ControlNetModel.from_pretrained("YaronElh/CCSR-v2", torch_dtype=dtype)
-        except Exception:
             try:
+                from models.controlnet import ControlNetModel
+            except ImportError:
                 from diffusers import ControlNetModel
-                controlnet = ControlNetModel.from_pretrained("YaronElh/CCSR-v2", torch_dtype=dtype)
-            except Exception as e:
-                raise RuntimeError(
-                    f"Chưa tìm thấy trọng số CCSR v2 ({e}).\n"
-                    "Vui lòng chạy ô [BƯỚC 3B] trong Colab Notebook để tải mã nguồn và mô hình CCSR."
-                )
 
+            if local_ctrl:
+                print(f"[CCSR Engine] Nạp ControlNet từ thư mục cục bộ: {local_ctrl}")
+                controlnet = ControlNetModel.from_pretrained(local_ctrl, torch_dtype=dtype)
+            else:
+                print("[CCSR Engine] Đang tải ControlNet CCSR-v2 từ Hugging Face (YaronElh/CCSR-v2, subfolder='controlnet')...")
+                controlnet = ControlNetModel.from_pretrained("YaronElh/CCSR-v2", subfolder="controlnet", torch_dtype=dtype)
+        except Exception as e:
+            raise RuntimeError(
+                f"Lỗi khi nạp CCSR ControlNet: {e}\n"
+                "Vui lòng đảm bảo đã kết nối mạng hoặc chạy ô [BƯỚC 3B] trong Colab Notebook."
+            )
+
+        # Load VAE model
+        vae = None
+        try:
+            if local_vae:
+                print(f"[CCSR Engine] Nạp custom VAE từ: {local_vae}")
+                vae = AutoencoderKL.from_pretrained(local_vae, torch_dtype=dtype)
+            else:
+                print("[CCSR Engine] Đang tải VAE CCSR-v2 từ Hugging Face (YaronElh/CCSR-v2, subfolder='vae')...")
+                vae = AutoencoderKL.from_pretrained("YaronElh/CCSR-v2", subfolder="vae", torch_dtype=dtype)
+        except Exception as e:
+            print(f"[CCSR Engine] Cảnh báo nạp VAE tùy biến ({e}). Sử dụng VAE chuẩn của SD 2.1.")
+            vae = AutoencoderKL.from_pretrained(base_model_id, subfolder="vae", torch_dtype=dtype)
+
+        # Pipeline class resolution
+        pipe_cls = None
         try:
             from pipelines.pipeline_ccsr import StableDiffusionControlNetPipeline
             pipe_cls = StableDiffusionControlNetPipeline
+            self.is_ccsr_pipeline = True
         except ImportError:
             from diffusers import StableDiffusionControlNetPipeline
             pipe_cls = StableDiffusionControlNetPipeline
+            self.is_ccsr_pipeline = False
 
-        print(f"[CCSR Engine] Đang khởi tạo Stable Diffusion 2.1 Base & CCSR ControlNet trên {self.device}...")
+        print(f"[CCSR Engine] Đang nạp Stable Diffusion 2.1 Base components trên {self.device}...")
         scheduler = DDPMScheduler.from_pretrained(base_model_id, subfolder="scheduler")
         text_encoder = CLIPTextModel.from_pretrained(base_model_id, subfolder="text_encoder", torch_dtype=dtype)
         tokenizer = CLIPTokenizer.from_pretrained(base_model_id, subfolder="tokenizer")
         feature_extractor = CLIPImageProcessor.from_pretrained(base_model_id, subfolder="feature_extractor")
         unet = UNet2DConditionModel.from_pretrained(base_model_id, subfolder="unet", torch_dtype=dtype)
-        vae = AutoencoderKL.from_pretrained(base_model_id, subfolder="vae", torch_dtype=dtype)
 
         pipe = pipe_cls(
             vae=vae,
@@ -131,17 +169,37 @@ class CcsrUpscaleEngine(UpscaleEngine):
         target_w, target_h = w * self.scale, h * self.scale
 
         with torch.inference_mode():
-            # 1-step efficient diffusion restoration
-            res = self.pipeline(
-                prompt="",
-                image=pil_img,
-                num_inference_steps=1,
-                guidance_scale=1.0,
-                output_type="np",
-            )
-            out_np = res.images[0]
-            if out_np.max() <= 1.0:
-                out_np = (out_np * 255.0).clip(0, 255).astype(np.uint8)
+            if self.is_ccsr_pipeline:
+                # Official CCSR-v2 pipeline call
+                # Signature: (t_max, t_min, tile_diffusion, tile_size, tile_stride, prompt, image, ...)
+                _, res = self.pipeline(
+                    0.6667,  # t_max
+                    0.3333,  # t_min
+                    False,   # tile_diffusion (processed frame by frame)
+                    512,     # tile_size
+                    256,     # tile_stride
+                    prompt="",
+                    image=pil_img,
+                    num_inference_steps=1,
+                    guidance_scale=1.0,
+                    start_steps=999,
+                    start_point="lr",
+                    use_vae_encode_condition=True,
+                    output_type="pil",
+                )
+                out_pil = res.images[0]
+            else:
+                # Standard Diffusers fallback call
+                res = self.pipeline(
+                    prompt="",
+                    image=pil_img,
+                    num_inference_steps=1,
+                    guidance_scale=1.0,
+                    output_type="pil",
+                )
+                out_pil = res.images[0]
+
+        out_np = np.array(out_pil)
 
         # Scale alignment if needed
         if out_np.shape[1] != target_w or out_np.shape[0] != target_h:

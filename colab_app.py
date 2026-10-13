@@ -282,7 +282,7 @@ def create_ui():
     .gr-button-stop { background: #dc2626 !important; color: white !important; }
     """
 
-    with gr.Blocks(title="Eco Video Upscaler", theme=gr.themes.Base(), css=custom_css) as demo:
+    with gr.Blocks(title="Eco Video Upscaler") as demo:
         with gr.Column(elem_id="header"):
             gr.Markdown(
                 """
