@@ -227,6 +227,8 @@ class CcsrUpscaleEngine(UpscaleEngine):
         w, h = pil_img.size
         target_w, target_h = w * self.scale, h * self.scale
 
+        gen = torch.Generator(device=self.device).manual_seed(42)
+
         with torch.inference_mode():
             if self.is_ccsr_pipeline:
                 # Official CCSR-v2 pipeline call
@@ -239,6 +241,7 @@ class CcsrUpscaleEngine(UpscaleEngine):
                     256,     # tile_stride
                     prompt="",
                     image=pil_img,
+                    generator=gen,
                     num_inference_steps=1,
                     guidance_scale=1.0,
                     start_steps=999,
@@ -252,6 +255,7 @@ class CcsrUpscaleEngine(UpscaleEngine):
                 res = self.pipeline(
                     prompt="",
                     image=pil_img,
+                    generator=gen,
                     num_inference_steps=1,
                     guidance_scale=1.0,
                     output_type="pil",
@@ -263,9 +267,6 @@ class CcsrUpscaleEngine(UpscaleEngine):
         # Scale alignment if needed
         if out_np.shape[1] != target_w or out_np.shape[0] != target_h:
             out_np = cv2.resize(out_np, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
-
-        # Eliminate Stable Diffusion VAE decoding luminance drop and color drift (official CCSR AdaIN)
-        out_np = adain_color_fix(out_np, frame)
 
         return out_np
 

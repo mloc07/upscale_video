@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 
 from ecoup.checkpoint import CheckpointManager
-from ecoup.color_fix import adain_color_fix
+from ecoup.color_fix import wavelet_color_fix, adain_color_fix
 from ecoup.config import AppConfig
 from ecoup.dedup import FrameDeduplicator
 from ecoup.engine.base import UpscaleEngine
@@ -176,9 +176,9 @@ class UpscalePipeline:
                     # Post-processing: Color Fix / Recover Original Detail / Sharpen / Film Grain
                     if hasattr(self.config, "post_process"):
                         pp = self.config.post_process
-                        # 0. Color & Luminance Alignment (AdaIN Color Fix to prevent darkening)
+                        # 0. Color & Luminance Alignment (Wavelet Frequency Color Fix to prevent darkening and flickering)
                         if getattr(pp, "color_fix", False):
-                            out_frame = adain_color_fix(out_frame, frame)
+                            out_frame = wavelet_color_fix(out_frame, frame)
 
                         # 1. Recover Original Detail (Alpha Blend with Lanczos base to suppress hallucination & restore lip texture)
                         if pp.recover_detail > 0.0:

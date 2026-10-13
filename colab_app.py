@@ -212,7 +212,7 @@ def run_upscale(
             tile_overlap=tile_ov,
         ),
         thermal=ThermalConfig(enabled=False),
-        frame_saving=FrameSavingConfig(enable_dedup=True),
+        frame_saving=FrameSavingConfig(enable_dedup=("ccsr" not in model_choice.lower())),
         checkpoint=CheckpointConfig(enabled=False),
         encode=EncodeConfig(codec="auto", copy_audio=True),
         pre_process=PreProcessConfig(denoise=pre_denoise_pct / 100.0),
