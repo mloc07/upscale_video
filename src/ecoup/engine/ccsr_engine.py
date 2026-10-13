@@ -102,10 +102,16 @@ class CcsrUpscaleEngine(UpscaleEngine):
 
             if local_ctrl:
                 print(f"[CCSR Engine] Nạp ControlNet từ thư mục cục bộ: {local_ctrl}")
-                controlnet = ControlNetModel.from_pretrained(local_ctrl, torch_dtype=dtype)
+                try:
+                    controlnet = ControlNetModel.from_pretrained(local_ctrl, torch_dtype=dtype, low_cpu_mem_usage=False)
+                except TypeError:
+                    controlnet = ControlNetModel.from_pretrained(local_ctrl, torch_dtype=dtype)
             else:
                 print("[CCSR Engine] Đang tải ControlNet CCSR-v2 từ Hugging Face (YaronElh/CCSR-v2, subfolder='controlnet')...")
-                controlnet = ControlNetModel.from_pretrained("YaronElh/CCSR-v2", subfolder="controlnet", torch_dtype=dtype)
+                try:
+                    controlnet = ControlNetModel.from_pretrained("YaronElh/CCSR-v2", subfolder="controlnet", torch_dtype=dtype, low_cpu_mem_usage=False)
+                except TypeError:
+                    controlnet = ControlNetModel.from_pretrained("YaronElh/CCSR-v2", subfolder="controlnet", torch_dtype=dtype)
         except Exception as e:
             raise RuntimeError(
                 f"Lỗi khi nạp CCSR ControlNet: {e}\n"
@@ -117,13 +123,22 @@ class CcsrUpscaleEngine(UpscaleEngine):
         try:
             if local_vae:
                 print(f"[CCSR Engine] Nạp custom VAE từ: {local_vae}")
-                vae = AutoencoderKL.from_pretrained(local_vae, torch_dtype=dtype)
+                try:
+                    vae = AutoencoderKL.from_pretrained(local_vae, torch_dtype=dtype, low_cpu_mem_usage=False)
+                except TypeError:
+                    vae = AutoencoderKL.from_pretrained(local_vae, torch_dtype=dtype)
             else:
                 print("[CCSR Engine] Đang tải VAE CCSR-v2 từ Hugging Face (YaronElh/CCSR-v2, subfolder='vae')...")
-                vae = AutoencoderKL.from_pretrained("YaronElh/CCSR-v2", subfolder="vae", torch_dtype=dtype)
+                try:
+                    vae = AutoencoderKL.from_pretrained("YaronElh/CCSR-v2", subfolder="vae", torch_dtype=dtype, low_cpu_mem_usage=False)
+                except TypeError:
+                    vae = AutoencoderKL.from_pretrained("YaronElh/CCSR-v2", subfolder="vae", torch_dtype=dtype)
         except Exception as e:
             print(f"[CCSR Engine] Cảnh báo nạp VAE tùy biến ({e}). Sử dụng VAE chuẩn của SD 2.1.")
-            vae = AutoencoderKL.from_pretrained(base_model_id, subfolder="vae", torch_dtype=dtype)
+            try:
+                vae = AutoencoderKL.from_pretrained(base_model_id, subfolder="vae", torch_dtype=dtype, low_cpu_mem_usage=False)
+            except TypeError:
+                vae = AutoencoderKL.from_pretrained(base_model_id, subfolder="vae", torch_dtype=dtype)
 
         # Pipeline class resolution
         pipe_cls = None
@@ -136,7 +151,7 @@ class CcsrUpscaleEngine(UpscaleEngine):
             pipe_cls = StableDiffusionControlNetPipeline
             self.is_ccsr_pipeline = False
 
-        # Base model candidates (using open public mirrors to prevent 401 Client Error from gated stabilityai repo)
+        # Base model candidates (using open public mirrors to prevent 401 Client Error)
         if Path("preset/models/stable-diffusion-2-1-base").exists():
             preferred_base = str(Path("preset/models/stable-diffusion-2-1-base").resolve())
         else:
@@ -153,10 +168,19 @@ class CcsrUpscaleEngine(UpscaleEngine):
             try:
                 print(f"[CCSR Engine] Đang nạp Stable Diffusion 2.1 Base components từ {cand} trên {self.device}...")
                 scheduler = DDPMScheduler.from_pretrained(cand, subfolder="scheduler")
-                text_encoder = CLIPTextModel.from_pretrained(cand, subfolder="text_encoder", torch_dtype=dtype)
+                try:
+                    text_encoder = CLIPTextModel.from_pretrained(cand, subfolder="text_encoder", torch_dtype=dtype, low_cpu_mem_usage=False)
+                except TypeError:
+                    text_encoder = CLIPTextModel.from_pretrained(cand, subfolder="text_encoder", torch_dtype=dtype)
+
                 tokenizer = CLIPTokenizer.from_pretrained(cand, subfolder="tokenizer")
                 feature_extractor = CLIPImageProcessor.from_pretrained(cand, subfolder="feature_extractor")
-                unet = UNet2DConditionModel.from_pretrained(cand, subfolder="unet", torch_dtype=dtype)
+
+                try:
+                    unet = UNet2DConditionModel.from_pretrained(cand, subfolder="unet", torch_dtype=dtype, low_cpu_mem_usage=False)
+                except TypeError:
+                    unet = UNet2DConditionModel.from_pretrained(cand, subfolder="unet", torch_dtype=dtype)
+
                 base_model_id = cand
                 break
             except Exception as e:
@@ -169,6 +193,15 @@ class CcsrUpscaleEngine(UpscaleEngine):
                 "Vui lòng kiểm tra kết nối internet của Google Colab."
             )
 
+        # Move constituent models to device and freeze weights (matching official CCSR test_ccsr_tile.py)
+        for m in [vae, text_encoder, unet, controlnet]:
+            if m is not None:
+                try:
+                    m.requires_grad_(False)
+                except Exception:
+                    pass
+                m.to(self.device, dtype=dtype)
+
         pipe = pipe_cls(
             vae=vae,
             text_encoder=text_encoder,
@@ -180,7 +213,6 @@ class CcsrUpscaleEngine(UpscaleEngine):
             safety_checker=None,
             requires_safety_checker=False,
         )
-        pipe = pipe.to(self.device)
         self.pipeline = pipe
         print(f"[CCSR Engine] Khởi động CCSR Diffusion thành công trên {self.device}!")
 
