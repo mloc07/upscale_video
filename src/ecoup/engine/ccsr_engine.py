@@ -10,7 +10,6 @@ import os
 import sys
 from pathlib import Path
 from typing import Optional
-import cv2
 import numpy as np
 from PIL import Image
 
@@ -28,7 +27,7 @@ class CcsrUpscaleEngine(UpscaleEngine):
         control_strength: float = 0.75,
     ):
         self.device = device
-        self.scale = 2
+        self.scale = 4
         self.control_strength = control_strength
         self.pipeline = None
         self.is_ccsr_pipeline = False
@@ -153,10 +152,11 @@ class CcsrUpscaleEngine(UpscaleEngine):
             from pipelines.pipeline_ccsr import StableDiffusionControlNetPipeline
             pipe_cls = StableDiffusionControlNetPipeline
             self.is_ccsr_pipeline = True
-        except ImportError:
-            from diffusers import StableDiffusionControlNetPipeline
-            pipe_cls = StableDiffusionControlNetPipeline
-            self.is_ccsr_pipeline = False
+        except ImportError as e:
+            raise RuntimeError(
+                "Không thể nạp pipeline CCSR-v2 tùy biến tại ccsr_core/pipelines/pipeline_ccsr.py. "
+                "Từ chối fallback sang StableDiffusionControlNetPipeline chuẩn vì không tương thích CCSR-v2."
+            ) from e
 
         # Base model candidates (using open public mirrors to prevent 401 Client Error)
         if Path("preset/models/stable-diffusion-2-1-base").exists():
@@ -231,9 +231,10 @@ class CcsrUpscaleEngine(UpscaleEngine):
         import torch
         import inspect
 
-        pil_img = Image.fromarray(frame)
+        pil_img = Image.fromarray(frame).convert("RGB")
         w, h = pil_img.size
         target_w, target_h = w * self.scale, h * self.scale
+        cond_img = pil_img.resize((target_w, target_h), resample=Image.Resampling.BICUBIC)
 
         strength = float(control_strength if control_strength is not None else self.control_strength)
         gen = torch.Generator(device=self.device).manual_seed(42)
@@ -243,10 +244,10 @@ class CcsrUpscaleEngine(UpscaleEngine):
         # Build dynamic pipeline parameters
         pipe_kwargs = {
             "prompt": "",
-            "image": pil_img,
+            "image": cond_img,
             "generator": gen,
-            "num_inference_steps": 1,
-            "guidance_scale": 1.0,
+            "num_inference_steps": 6,
+            "guidance_scale": 4.5,
             "output_type": "pil",
         }
         if "controlnet_conditioning_scale" in sig.parameters:
@@ -260,7 +261,7 @@ class CcsrUpscaleEngine(UpscaleEngine):
                 # Signature: (t_max, t_min, tile_diffusion, tile_size, tile_stride, prompt, image, ...)
                 ccsr_args = (
                     0.6667,  # t_max
-                    0.0,     # t_min (must reach 0.0 for full reverse diffusion sharpness)
+                    0.5,     # t_min
                     False,   # tile_diffusion (processed frame by frame)
                     512,     # tile_size
                     256,     # tile_stride
@@ -274,17 +275,13 @@ class CcsrUpscaleEngine(UpscaleEngine):
                 filtered_kwargs = {k: v for k, v in ccsr_kwargs.items() if k in sig.parameters}
                 _, res = self.pipeline(*ccsr_args, **filtered_kwargs)
                 out_pil = res.images[0]
-            else:
-                # Standard Diffusers fallback call
-                filtered_kwargs = {k: v for k, v in pipe_kwargs.items() if k in sig.parameters}
-                res = self.pipeline(**filtered_kwargs)
-                out_pil = res.images[0]
-
         out_np = np.array(out_pil)
 
-        # Scale alignment if needed
         if out_np.shape[1] != target_w or out_np.shape[0] != target_h:
-            out_np = cv2.resize(out_np, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
+            raise RuntimeError(
+                f"CCSR output sai kích thước: nhận {out_np.shape[1]}x{out_np.shape[0]}, mong đợi {target_w}x{target_h}. "
+                "Không resize Lanczos tự động để tránh làm mờ chi tiết."
+            )
 
         return out_np
 
