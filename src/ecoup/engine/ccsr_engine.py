@@ -84,7 +84,7 @@ class CcsrUpscaleEngine(UpscaleEngine):
                 local_vae = str(v)
                 break
 
-        base_model_id = "stabilityai/stable-diffusion-2-1-base"
+        base_model_id = "Manojb/stable-diffusion-2-1-base"
 
         try:
             from diffusers import AutoencoderKL, UNet2DConditionModel, DDPMScheduler
@@ -136,12 +136,38 @@ class CcsrUpscaleEngine(UpscaleEngine):
             pipe_cls = StableDiffusionControlNetPipeline
             self.is_ccsr_pipeline = False
 
-        print(f"[CCSR Engine] Đang nạp Stable Diffusion 2.1 Base components trên {self.device}...")
-        scheduler = DDPMScheduler.from_pretrained(base_model_id, subfolder="scheduler")
-        text_encoder = CLIPTextModel.from_pretrained(base_model_id, subfolder="text_encoder", torch_dtype=dtype)
-        tokenizer = CLIPTokenizer.from_pretrained(base_model_id, subfolder="tokenizer")
-        feature_extractor = CLIPImageProcessor.from_pretrained(base_model_id, subfolder="feature_extractor")
-        unet = UNet2DConditionModel.from_pretrained(base_model_id, subfolder="unet", torch_dtype=dtype)
+        # Base model candidates (using open public mirrors to prevent 401 Client Error from gated stabilityai repo)
+        if Path("preset/models/stable-diffusion-2-1-base").exists():
+            preferred_base = str(Path("preset/models/stable-diffusion-2-1-base").resolve())
+        else:
+            preferred_base = "Manojb/stable-diffusion-2-1-base"
+
+        base_candidates = [
+            preferred_base,
+            "Manojb/stable-diffusion-2-1-base",
+            "sd2-community/stable-diffusion-2-1-base",
+        ]
+
+        scheduler = None
+        for cand in base_candidates:
+            try:
+                print(f"[CCSR Engine] Đang nạp Stable Diffusion 2.1 Base components từ {cand} trên {self.device}...")
+                scheduler = DDPMScheduler.from_pretrained(cand, subfolder="scheduler")
+                text_encoder = CLIPTextModel.from_pretrained(cand, subfolder="text_encoder", torch_dtype=dtype)
+                tokenizer = CLIPTokenizer.from_pretrained(cand, subfolder="tokenizer")
+                feature_extractor = CLIPImageProcessor.from_pretrained(cand, subfolder="feature_extractor")
+                unet = UNet2DConditionModel.from_pretrained(cand, subfolder="unet", torch_dtype=dtype)
+                base_model_id = cand
+                break
+            except Exception as e:
+                print(f"[CCSR Engine] Lỗi khi nạp từ {cand} ({e}), đang thử mirror khác...")
+                continue
+
+        if scheduler is None:
+            raise RuntimeError(
+                "Không thể nạp thành phần Stable Diffusion 2.1 Base từ kho lưu trữ.\n"
+                "Vui lòng kiểm tra kết nối internet của Google Colab."
+            )
 
         pipe = pipe_cls(
             vae=vae,
