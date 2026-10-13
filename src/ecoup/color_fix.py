@@ -10,7 +10,8 @@ def wavelet_color_fix(target: np.ndarray, source: np.ndarray, radius: int = 15) 
 
     Eliminates all color flickering, gamma shifts, and VAE darkening by decomposing the frame:
     - Low frequencies (illumination, color, tone) are anchored directly to the original video frame.
-    - High frequencies (sharp edges, textures, fine details) are preserved from the AI super-resolution model.
+    - High frequencies (sharp edges, textures, fine details) are preserved 100% from the AI model
+      without any artificial dampening or softening.
 
     Args:
         target: (H, W, 3) uint8 RGB array (AI upscaled image with fine textures).
@@ -18,7 +19,7 @@ def wavelet_color_fix(target: np.ndarray, source: np.ndarray, radius: int = 15) 
         radius: Gaussian blur radius for low-frequency separation.
 
     Returns:
-        (H, W, 3) uint8 RGB array with rock-solid temporal stability and zero flickering.
+        (H, W, 3) uint8 RGB array with maximum AI sharpness and rock-solid temporal color stability.
     """
     if target.shape[2] != 3 or source.shape[2] != 3:
         return target
@@ -36,12 +37,8 @@ def wavelet_color_fix(target: np.ndarray, source: np.ndarray, radius: int = 15) 
     low_t = cv2.GaussianBlur(tf, ksize, 0)
     low_s = cv2.GaussianBlur(sf, ksize, 0)
 
-    # Scale high frequencies by ratio of global standard deviations to restore contrast
-    std_t = tf.std()
-    std_s = sf.std()
-    ratio = np.clip(std_s / (std_t + 1e-5), 0.5, 2.0)
-
-    high_t = (tf - low_t) * ratio
+    # High frequency details from AI upscale preserved without dampening
+    high_t = tf - low_t
     fixed = np.clip(low_s + high_t, 0.0, 255.0).astype(np.uint8)
     return fixed
 

@@ -235,7 +235,7 @@ class CcsrUpscaleEngine(UpscaleEngine):
                 # Signature: (t_max, t_min, tile_diffusion, tile_size, tile_stride, prompt, image, ...)
                 _, res = self.pipeline(
                     0.6667,  # t_max
-                    0.3333,  # t_min
+                    0.0,     # t_min (must reach 0.0 for full reverse diffusion sharpness)
                     False,   # tile_diffusion (processed frame by frame)
                     512,     # tile_size
                     256,     # tile_stride

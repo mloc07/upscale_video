@@ -131,7 +131,7 @@ class CheckpointConfig:
 
 @dataclass
 class PreProcessConfig:
-    denoise: float = 0.30     # 0.0 - 1.0 (Edge-preserving bilateral filter to clean artifacts before AI)
+    denoise: float = 0.0      # 0.0 - 1.0 (Edge-preserving bilateral filter; default 0.0 to prevent softening)
 
     def validate(self) -> None:
         if not (0.0 <= self.denoise <= 1.0):
@@ -140,10 +140,10 @@ class PreProcessConfig:
 
 @dataclass
 class PostProcessConfig:
-    color_fix: bool = True           # Adaptive Instance Normalization to match original luminance & prevent darkening
-    recover_detail: float = 0.15     # 0.0 - 0.5 (blend original Lanczos to suppress hallucination & restore lip texture)
-    sharpen: float = 0.20            # 0.0 - 1.0 (unsharp mask edge enhancement)
-    film_grain: float = 0.01         # 0.0 - 0.05 (natural photonic grain to eliminate plastic skin)
+    color_fix: bool = True           # Wavelet frequency color anchoring to match original luminance & prevent darkening
+    recover_detail: float = 0.0      # 0.0 - 0.5 (blend original Lanczos; default 0.0 to prevent blurring AI details)
+    sharpen: float = 0.25            # 0.0 - 1.0 (unsharp mask edge enhancement for crisp definition)
+    film_grain: float = 0.0          # 0.0 - 0.05 (natural photonic grain)
 
     def validate(self) -> None:
         if not isinstance(self.color_fix, bool):

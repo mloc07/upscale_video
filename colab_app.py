@@ -327,14 +327,14 @@ def create_ui():
                 denoise_sl = gr.Slider(
                     minimum=0,
                     maximum=100,
-                    value=30,
+                    value=0,
                     step=5,
                     label="Khử nhiễu (Denoise %)",
                 )
                 recover_sl = gr.Slider(
                     minimum=0,
                     maximum=50,
-                    value=20,
+                    value=0,
                     step=5,
                     label="Khôi phục gốc (Recover %)",
                 )
@@ -343,12 +343,12 @@ def create_ui():
                 sharpen_sl = gr.Slider(
                     minimum=0,
                     maximum=100,
-                    value=20,
+                    value=25,
                     step=5,
                     label="Làm nét (Sharpen %)",
                 )
                 grain_cb = gr.Checkbox(
-                    value=True,
+                    value=False,
                     label="Bù hạt phim (Film Grain)",
                 )
 
