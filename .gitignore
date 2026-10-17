@@ -42,3 +42,7 @@ models/*.bin
 *.avi
 *.mov
 scratch/
+
+# Evaluation
+eval/clips/
+eval/results/
