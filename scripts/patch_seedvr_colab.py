@@ -326,6 +326,39 @@ def meta_non_persistent_buffer_init_fn(module: nn.Module) -> nn.Module:
         meta_utils_file.write_text(SAFE_META_UTILS, encoding="utf-8")
         print(f"[Patch] Đã vá an toàn meta_init_utils.py tại: {meta_utils_file}")
 
+    # 10. Update configs_3b/main.yaml to disable causal temporal slicing and set conv_max_mem: 0.15 to fit Colab GPU
+    if config_yaml.exists():
+        cfg_content = config_yaml.read_text(encoding="utf-8")
+        cfg_content = cfg_content.replace("split_size: 4", "split_size: null")
+        cfg_content = cfg_content.replace("memory_device: same", "memory_device: null")
+        cfg_content = cfg_content.replace("memory_device: cpu", "memory_device: null")
+        cfg_content = cfg_content.replace("conv_max_mem: 0.5", "conv_max_mem: 0.15")
+        cfg_content = cfg_content.replace("norm_max_mem: 0.5", "norm_max_mem: 0.15")
+        cfg_content = cfg_content.replace("conv_max_mem: 0.08", "conv_max_mem: 0.15")
+        cfg_content = cfg_content.replace("norm_max_mem: 0.08", "norm_max_mem: 0.15")
+        cfg_content = cfg_content.replace("conv_max_mem: 0.03", "conv_max_mem: 0.15")
+        cfg_content = cfg_content.replace("norm_max_mem: 0.03", "norm_max_mem: 0.15")
+        config_yaml.write_text(cfg_content, encoding="utf-8")
+        print("[Patch] Đã cấu hình VAE disable_slicing (split_size: null) và conv_max_mem: 0.15 trong main.yaml")
+
+    # 11. Patch infer.py to explicitly call set_memory_limit in configure_vae_model
+    infer_py = repo_path / "projects" / "video_diffusion_sr" / "infer.py"
+    if infer_py.exists():
+        infer_code = infer_py.read_text(encoding="utf-8")
+        vae_slicing_call = 'self.vae.set_causal_slicing(**self.config.vae.slicing)'
+        vae_limit_call = (
+            'self.vae.set_causal_slicing(**self.config.vae.slicing)\n'
+            '        if hasattr(self.vae, "set_memory_limit") and hasattr(self.config.vae, "memory_limit"):\n'
+            '            self.vae.set_memory_limit(**self.config.vae.memory_limit)'
+        )
+        if vae_slicing_call in infer_code and 'set_memory_limit' not in infer_code:
+            infer_code = infer_code.replace(vae_slicing_call, vae_limit_call)
+            print("[Patch] Đã kích hoạt set_memory_limit trong infer.py")
+        if "latent = latent / scale + shift" in infer_code:
+            infer_code = infer_code.replace("latent = latent / scale + shift", "latent = (latent / scale + shift).to(dtype)")
+            print("[Patch] Đã giữ nguyên dtype bfloat16 trong vae_decode để ngăn tràn VRAM float32")
+        infer_py.write_text(infer_code, encoding="utf-8")
+
     print("[Patch] Hoàn tất toàn bộ vá lỗi môi trường cho SeedVR!")
 
 

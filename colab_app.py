@@ -21,6 +21,9 @@ import cv2
 import gradio as gr
 import numpy as np
 
+# Prevent CUDA memory fragmentation on Colab Tesla T4
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 # Ensure src is on sys.path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 

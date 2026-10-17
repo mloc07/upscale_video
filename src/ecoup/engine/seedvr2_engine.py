@@ -23,6 +23,9 @@ import numpy as np
 
 from ecoup.engine.base import VideoUpscaleEngine
 
+# Prevent CUDA memory fragmentation on Colab Tesla T4
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 
 def _clear_gpu():
     gc.collect()
@@ -30,6 +33,7 @@ def _clear_gpu():
         import torch
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
     except Exception:
         pass
 
@@ -241,6 +245,11 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
 
             print("[SeedVR2 Engine] Nạp VAE checkpoint vào CPU...")
             runner.configure_vae_model()
+            runner.vae.to(dtype=torch.bfloat16)
+            if hasattr(runner.vae, "disable_slicing"):
+                runner.vae.disable_slicing()
+            if hasattr(runner.vae, "set_memory_limit"):
+                runner.vae.set_memory_limit(conv_max_mem=0.15, norm_max_mem=0.15)
             runner.vae.to("cpu")
             _clear_gpu()
 
@@ -336,16 +345,22 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
 
                 # Step 1: VAE Encode on GPU
                 self.runner.vae.to(device=get_device(), dtype=torch.bfloat16)
-                with torch.no_grad():
+                if hasattr(self.runner.vae, "disable_slicing"):
+                    self.runner.vae.disable_slicing()
+                if hasattr(self.runner.vae, "set_memory_limit"):
+                    self.runner.vae.set_memory_limit(conv_max_mem=0.15, norm_max_mem=0.15)
+                with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
                     cond_latents = self.runner.vae_encode([cond_video.squeeze(0)])
+                cond_latents = [c.to("cpu", dtype=torch.bfloat16) for c in cond_latents]
+                del cond_video
                 _clear_vae_memory(self.runner.vae)
                 self.runner.vae.to("cpu")
                 _clear_gpu()
 
                 # Step 2: DiT Sampling on GPU
                 self.runner.dit.to(device=get_device(), dtype=torch.bfloat16)
-                noises = [torch.randn_like(latent).to(get_device()) for latent in cond_latents]
-                cond_latents_cuda = [c.to(get_device()) for c in cond_latents]
+                cond_latents_cuda = [c.to(get_device(), dtype=torch.bfloat16) for c in cond_latents]
+                noises = [torch.randn_like(latent).to(get_device()) for latent in cond_latents_cuda]
                 conditions = [
                     self.runner.get_condition(noise, task="sr", latent_blur=latent_blur)
                     for noise, latent_blur in zip(noises, cond_latents_cuda)
@@ -375,17 +390,25 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
                     )
                 self.runner.dit.train(was_training)
                 latents = na.unflatten(latents, latents_shapes)
+                latents_cpu = [l.to("cpu", dtype=torch.bfloat16) for l in latents]
 
-                # Step 3: Offload DiT to CPU
+                # Step 3: Offload DiT to CPU and free all sampling buffers
                 self.runner.dit.to("cpu")
+                del noises, cond_latents, cond_latents_cuda, conditions, latents, latents_cond, text_pos_embeds
                 _clear_gpu()
 
                 # Step 4: VAE Decode on GPU
                 self.runner.vae.to(device=get_device(), dtype=torch.bfloat16)
-                with torch.no_grad():
-                    video_tensors = self.runner.vae_decode(latents)
+                if hasattr(self.runner.vae, "disable_slicing"):
+                    self.runner.vae.disable_slicing()
+                if hasattr(self.runner.vae, "set_memory_limit"):
+                    self.runner.vae.set_memory_limit(conv_max_mem=0.15, norm_max_mem=0.15)
+                latents_bf16 = [l.to(device=get_device(), dtype=torch.bfloat16) for l in latents_cpu]
+                with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+                    video_tensors = self.runner.vae_decode(latents_bf16)
                 _clear_vae_memory(self.runner.vae)
                 self.runner.vae.to("cpu")
+                del latents_bf16, latents_cpu
                 _clear_gpu()
 
                 out = video_tensors[0].to("cpu")
