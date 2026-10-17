@@ -82,6 +82,7 @@ MODEL_REGISTRY = {
 
 def get_available_models():
     return [
+        "SeedVR2-3B (ByteDance DiT Video)",
         "CCSR v2 (Diffusion Model)",
         "RealESRGAN x2plus (2x)",
         "NomosUni 2x",
@@ -159,7 +160,14 @@ def run_upscale(
     model_scale = 2
     model_file_str = "models/model.onnx"
 
-    if "ccsr" in model_choice.lower():
+    if "seedvr" in model_choice.lower():
+        from ecoup.engine.seedvr2_engine import SeedVR2UpscaleEngine
+        engine = SeedVR2UpscaleEngine(scale=2)
+        model_name = "SeedVR2-3B"
+        model_scale = 2
+        engine.load(model_path="models/SeedVR2", precision="fp8", provider="cuda")
+        model_file_str = "models/SeedVR2"
+    elif "ccsr" in model_choice.lower():
         from ecoup.engine.ccsr_engine import CcsrUpscaleEngine
         engine = CcsrUpscaleEngine(control_strength=control_strength)
         model_name = "CCSR_v2"
@@ -212,9 +220,13 @@ def run_upscale(
             tile_size=tile_sz,
             tile_overlap=tile_ov,
             control_strength=control_strength,
+            clip_length=16,
+            clip_overlap=2,
         ),
         thermal=ThermalConfig(enabled=False),
-        frame_saving=FrameSavingConfig(enable_dedup=("ccsr" not in model_choice.lower())),
+        frame_saving=FrameSavingConfig(
+            enable_dedup=("ccsr" not in model_choice.lower() and "seedvr" not in model_choice.lower())
+        ),
         checkpoint=CheckpointConfig(enabled=False),
         encode=EncodeConfig(codec="auto", copy_audio=True),
         pre_process=PreProcessConfig(denoise=pre_denoise_pct / 100.0),
@@ -307,7 +319,7 @@ def create_ui():
             with gr.Row():
                 model_dd = gr.Dropdown(
                     choices=get_available_models(),
-                    value="CCSR v2 (Diffusion Model)",
+                    value="SeedVR2-3B (ByteDance DiT Video)",
                     label="Mô hình AI",
                 )
                 scale_dd = gr.Dropdown(

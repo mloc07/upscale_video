@@ -35,6 +35,8 @@ class InferenceConfig:
     tile_overlap: int = 16
     batch_size: int = 1
     control_strength: float = 0.75   # 0.0 - 2.0 (ControlNet conditioning scale; 0.7-0.8 for crisp textures, 1.0 for strict adherence)
+    clip_length: int = 16            # Number of frames per segment for VideoUpscaleEngine
+    clip_overlap: int = 2            # Number of overlapping frames for temporal cross-fade blending
 
     def validate(self) -> None:
         valid_providers = ("auto", "cuda", "tensorrt", "cpu")
@@ -52,6 +54,14 @@ class InferenceConfig:
             raise ValueError(f"inference.batch_size must be >= 1, got {self.batch_size}.")
         if not (0.0 <= self.control_strength <= 2.0):
             raise ValueError(f"inference.control_strength must be in range [0.0, 2.0], got {self.control_strength}.")
+        if self.clip_length <= 0:
+            raise ValueError(f"inference.clip_length must be >= 1, got {self.clip_length}.")
+        if self.clip_overlap < 0:
+            raise ValueError(f"inference.clip_overlap must be >= 0, got {self.clip_overlap}.")
+        if self.clip_overlap >= self.clip_length:
+            raise ValueError(
+                f"inference.clip_overlap ({self.clip_overlap}) must be less than clip_length ({self.clip_length})."
+            )
 
 
 @dataclass

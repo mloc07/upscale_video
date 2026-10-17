@@ -9,7 +9,7 @@ import pytest
 from pathlib import Path
 
 from ecoup.cli import _ensure_path_refreshed
-from ecoup.config import AppConfig, ModelConfig, CheckpointConfig, EncodeConfig
+from ecoup.config import AppConfig, ModelConfig, CheckpointConfig, EncodeConfig, InferenceConfig
 from ecoup.pipeline import UpscalePipeline
 from ecoup.video_io import get_video_metadata
 
@@ -135,3 +135,28 @@ def test_pipeline_with_pre_and_post_processing(smoke_video: Path, tmp_path: Path
     meta_out = get_video_metadata(out_video)
     assert meta_out.width == 320
     assert meta_out.height == 240
+
+
+def test_pipeline_clip_engine_smoke(smoke_video: Path, tmp_path: Path):
+    """End-to-end smoke test verifying clip engine branch in UpscalePipeline."""
+    from ecoup.engine.seedvr2_engine import SeedVR2UpscaleEngine
+
+    out_video = tmp_path / "clip_smoke_output.mp4"
+    cfg = AppConfig(
+        model=ModelConfig(name="SeedVR2", scale=2, target_scale=2),
+        inference=InferenceConfig(clip_length=16, clip_overlap=2),
+        checkpoint=CheckpointConfig(enabled=False),
+        encode=EncodeConfig(codec="auto", copy_audio=True),
+    )
+
+    engine = SeedVR2UpscaleEngine(scale=2)
+    pipeline = UpscalePipeline(config=cfg, engine=engine)
+    pipeline.run(input_path=smoke_video, output_path=out_video, resume=False)
+
+    assert out_video.exists()
+    meta_in = get_video_metadata(smoke_video)
+    meta_out = get_video_metadata(out_video)
+    assert meta_out.total_frames == meta_in.total_frames
+    assert meta_out.width == meta_in.width * 2
+    assert meta_out.height == meta_in.height * 2
+    assert meta_out.has_audio is True

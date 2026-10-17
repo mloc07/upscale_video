@@ -16,7 +16,7 @@ from ecoup.checkpoint import CheckpointManager
 from ecoup.color_fix import wavelet_color_fix, adain_color_fix
 from ecoup.config import AppConfig
 from ecoup.dedup import FrameDeduplicator
-from ecoup.engine.base import UpscaleEngine
+from ecoup.engine.base import UpscaleEngine, VideoUpscaleEngine
 from ecoup.thermal import ThermalGovernor
 from ecoup.tiling import upscale_with_tiling
 from ecoup.utils import setup_logger, format_duration
@@ -29,7 +29,7 @@ class UpscalePipeline:
     def __init__(
         self,
         config: AppConfig,
-        engine: Optional[UpscaleEngine] = None,
+        engine: Optional[UpscaleEngine | VideoUpscaleEngine] = None,
         custom_upscale_fn: Optional[Callable[[np.ndarray], np.ndarray]] = None,
         on_progress: Optional[Callable[[int, int, float, float, any, float], None]] = None,
     ):
@@ -48,6 +48,33 @@ class UpscalePipeline:
     def set_paused(self, paused: bool) -> None:
         """Pause or resume pipeline processing."""
         self._paused = paused
+
+    def _preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
+        """Pre-processing: Edge-preserving Bilateral Filter to wash away compression noise before AI."""
+        if hasattr(self.config, "pre_process") and self.config.pre_process.denoise > 0.0:
+            strength = self.config.pre_process.denoise
+            sigma = 15.0 + strength * 45.0
+            denoised = cv2.bilateralFilter(frame, d=5, sigmaColor=sigma, sigmaSpace=sigma)
+            return cv2.addWeighted(denoised, strength, frame, 1.0 - strength, 0) if strength < 1.0 else denoised
+        return frame
+
+    def _postprocess_frame(self, out_frame: np.ndarray, orig_frame: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
+        """Post-processing: Color Fix, Recover Original Detail, Sharpening, and Film Grain."""
+        if hasattr(self.config, "post_process"):
+            pp = self.config.post_process
+            if getattr(pp, "color_fix", False):
+                out_frame = wavelet_color_fix(out_frame, orig_frame)
+            if pp.recover_detail > 0.0:
+                base = cv2.resize(orig_frame, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
+                out_frame = cv2.addWeighted(out_frame, 1.0 - pp.recover_detail, base, pp.recover_detail, 0)
+            if pp.sharpen > 0.0:
+                blurred = cv2.GaussianBlur(out_frame, (0, 0), sigmaX=1.5)
+                out_frame = cv2.addWeighted(out_frame, 1.0 + pp.sharpen, blurred, -pp.sharpen, 0)
+            if pp.film_grain > 0.0:
+                noise = np.random.normal(0, pp.film_grain * 255.0, (out_h, out_w, 1)).astype(np.float32)
+                noisy = out_frame.astype(np.float32) + noise
+                out_frame = np.clip(noisy, 0, 255).astype(np.uint8)
+        return out_frame
 
     def run(
         self,
@@ -78,10 +105,12 @@ class UpscalePipeline:
         # Prepare upscale function
         if self.custom_upscale_fn is not None:
             upscale_tile = self.custom_upscale_fn
-        elif self.engine is not None:
+        elif self.engine is not None and hasattr(self.engine, "upscale"):
             if hasattr(self.engine, "control_strength") and hasattr(self.config.inference, "control_strength"):
                 self.engine.control_strength = self.config.inference.control_strength
             upscale_tile = self.engine.upscale
+        elif self.engine is not None and hasattr(self.engine, "upscale_clip"):
+            upscale_tile = None
         else:
             self.logger.warning(
                 f"Không có inference engine cho model '{self.config.model.path}'. "
@@ -136,132 +165,182 @@ class UpscalePipeline:
         start_time = time.time()
         processed_count = 0
 
-        try:
-            for frame_idx, frame in enumerate(reader):
-                if self._cancelled:
-                    self.logger.warning("Pipeline cancelled by user.")
-                    break
+        # Check if engine is clip-based
+        is_clip_engine = isinstance(self.engine, VideoUpscaleEngine) or hasattr(self.engine, "upscale_clip")
 
-                while self._paused and not self._cancelled:
-                    time.sleep(0.1)
-
-                # Skip frames already processed in previous run
-                if frame_idx < start_frame:
-                    continue
-
-                # Thermal governor check & throttle
-                governor.wait_if_needed()
-
-                # Pre-processing: Edge-preserving Bilateral Filter to wash away compression noise before AI
-                input_for_ai = frame
-                if hasattr(self.config, "pre_process") and self.config.pre_process.denoise > 0.0:
-                    strength = self.config.pre_process.denoise
-                    sigma = 15.0 + strength * 45.0
-                    denoised = cv2.bilateralFilter(frame, d=5, sigmaColor=sigma, sigmaSpace=sigma)
-                    input_for_ai = cv2.addWeighted(denoised, strength, frame, 1.0 - strength, 0) if strength < 1.0 else denoised
-
-                # Check frame deduplication
-                is_dup, prev_result = dedup.check_duplicate(input_for_ai)
-                if is_dup and prev_result is not None:
-                    out_frame = prev_result
+        def write_frame_out(out_f: np.ndarray, frame_num: int) -> None:
+            nonlocal current_writer, current_segment_idx, frames_in_curr_segment, processed_count
+            if current_writer is None:
+                if self.config.checkpoint.enabled:
+                    seg_path = chk_mgr.get_segment_path(current_segment_idx)
+                    current_writer = VideoWriter(
+                        output_path=seg_path,
+                        width=out_w,
+                        height=out_h,
+                        fps=meta.fps_fraction,
+                        audio_source_path=None,  # Audio muxed in final concat
+                        codec=self.config.encode.codec,
+                        preset=self.config.encode.preset,
+                        crf_or_cq=self.config.encode.crf_or_cq,
+                    )
                 else:
-                    # AI inference with tiling and blend
-                    out_frame = upscale_with_tiling(
-                        input_for_ai,
-                        upscale_fn=upscale_tile,
-                        scale=scale,
-                        target_scale=target_scale,
-                        tile_size=self.config.inference.tile_size,
-                        tile_overlap=self.config.inference.tile_overlap,
+                    current_writer = VideoWriter(
+                        output_path=output_file,
+                        width=out_w,
+                        height=out_h,
+                        fps=meta.fps_fraction,
+                        audio_source_path=input_file if self.config.encode.copy_audio else None,
+                        codec=self.config.encode.codec,
+                        preset=self.config.encode.preset,
+                        crf_or_cq=self.config.encode.crf_or_cq,
                     )
 
-                    # Post-processing: Color Fix / Recover Original Detail / Sharpen / Film Grain
-                    if hasattr(self.config, "post_process"):
-                        pp = self.config.post_process
-                        # 0. Color & Luminance Alignment (Wavelet Frequency Color Fix to prevent darkening and flickering)
-                        if getattr(pp, "color_fix", False):
-                            out_frame = wavelet_color_fix(out_frame, frame)
+            current_writer.write_frame(out_f)
+            frames_in_curr_segment += 1
+            processed_count += 1
 
-                        # 1. Recover Original Detail (Alpha Blend with Lanczos base to suppress hallucination & restore lip texture)
-                        if pp.recover_detail > 0.0:
-                            base = cv2.resize(frame, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
-                            out_frame = cv2.addWeighted(
-                                out_frame, 1.0 - pp.recover_detail,
-                                base, pp.recover_detail,
-                                0
-                            )
-                        # 2. Adaptive Sharpening (Unsharp Mask)
-                        if pp.sharpen > 0.0:
-                            blurred = cv2.GaussianBlur(out_frame, (0, 0), sigmaX=1.5)
-                            out_frame = cv2.addWeighted(
-                                out_frame, 1.0 + pp.sharpen,
-                                blurred, -pp.sharpen,
-                                0
-                            )
-                        # 3. Film Grain (Suppress doll/plastic look)
-                        if pp.film_grain > 0.0:
-                            noise = np.random.normal(0, pp.film_grain * 255.0, (out_h, out_w, 1)).astype(np.float32)
-                            noisy = out_frame.astype(np.float32) + noise
-                            out_frame = np.clip(noisy, 0, 255).astype(np.uint8)
+            # Segment rollover for checkpointing
+            if self.config.checkpoint.enabled and frames_in_curr_segment >= interval:
+                current_writer.close()
+                seg_file = chk_mgr.get_segment_path(current_segment_idx)
+                segments.append(str(seg_file))
+                chk_mgr.save_state(processed_frames=frame_num, segments=segments, completed=False)
+                self.logger.info(f"Checkpoint saved: Segment {current_segment_idx} ({frame_num} frames total)")
+                current_writer = None
+                current_segment_idx += 1
+                frames_in_curr_segment = 0
 
-                    dedup.register_result(out_frame)
+            # Progress reporting
+            elapsed = time.time() - start_time
+            fps_stat = processed_count / max(0.001, elapsed)
+            remain_frames = max(0, meta.total_frames - frame_num)
+            eta_sec = remain_frames / max(0.001, fps_stat)
 
-                # Segment writer initialization
-                if current_writer is None:
-                    if self.config.checkpoint.enabled:
-                        seg_path = chk_mgr.get_segment_path(current_segment_idx)
-                        current_writer = VideoWriter(
-                            output_path=seg_path,
-                            width=out_w,
-                            height=out_h,
-                            fps=meta.fps_fraction,
-                            audio_source_path=None,  # Audio muxed in final concat
-                            codec=self.config.encode.codec,
-                            preset=self.config.encode.preset,
-                            crf_or_cq=self.config.encode.crf_or_cq,
-                        )
+            if self.on_progress:
+                self.on_progress(
+                    frame_num,
+                    meta.total_frames,
+                    fps_stat,
+                    eta_sec,
+                    governor.get_current_metrics(),
+                    0.0 if is_clip_engine else dedup.skip_rate,
+                )
+
+        try:
+            if is_clip_engine:
+                clip_len = getattr(self.config.inference, "clip_length", 16)
+                clip_ov = getattr(self.config.inference, "clip_overlap", 2)
+                step = max(1, clip_len - clip_ov)
+
+                reader_iter = iter(reader)
+                # Skip frames already processed in previous run
+                for _ in range(start_frame):
+                    try:
+                        next(reader_iter)
+                    except StopIteration:
+                        break
+
+                overlap_input_buffer: list[np.ndarray] = []
+                prev_tail: list[np.ndarray] = []
+                is_eof = False
+                chunk_idx = 0
+
+                while not is_eof and not self._cancelled:
+                    while self._paused and not self._cancelled:
+                        time.sleep(0.1)
+
+                    governor.wait_if_needed()
+
+                    raw_chunk = list(overlap_input_buffer)
+                    needed = clip_len - len(raw_chunk)
+                    for _ in range(needed):
+                        try:
+                            f = next(reader_iter)
+                            raw_chunk.append(f)
+                        except StopIteration:
+                            is_eof = True
+                            break
+
+                    if not raw_chunk:
+                        break
+
+                    # Pre-processing
+                    preprocessed_chunk = [self._preprocess_frame(f) for f in raw_chunk]
+
+                    # AI Inference on clip
+                    upscaled_chunk = self.engine.upscale_clip(preprocessed_chunk)
+
+                    # Post-processing
+                    postprocessed_chunk = [
+                        self._postprocess_frame(up_f, orig_f, out_w, out_h)
+                        for orig_f, up_f in zip(raw_chunk, upscaled_chunk)
+                    ]
+
+                    # Update overlap buffer for next chunk
+                    if not is_eof and clip_ov > 0 and len(raw_chunk) >= clip_ov:
+                        overlap_input_buffer = raw_chunk[-clip_ov:]
                     else:
-                        current_writer = VideoWriter(
-                            output_path=output_file,
-                            width=out_w,
-                            height=out_h,
-                            fps=meta.fps_fraction,
-                            audio_source_path=input_file if self.config.encode.copy_audio else None,
-                            codec=self.config.encode.codec,
-                            preset=self.config.encode.preset,
-                            crf_or_cq=self.config.encode.crf_or_cq,
+                        overlap_input_buffer = []
+
+                    # Output frames with cross-fade
+                    if chunk_idx == 0:
+                        if is_eof or clip_ov == 0:
+                            for f in postprocessed_chunk:
+                                write_frame_out(f, start_frame + processed_count + 1)
+                        else:
+                            for f in postprocessed_chunk[:step]:
+                                write_frame_out(f, start_frame + processed_count + 1)
+                            prev_tail = postprocessed_chunk[step:]
+                    else:
+                        curr_head = postprocessed_chunk[:clip_ov]
+                        fade_len = min(len(prev_tail), len(curr_head))
+                        for k in range(fade_len):
+                            alpha = float(k + 1) / float(fade_len + 1)
+                            blended = cv2.addWeighted(prev_tail[k], 1.0 - alpha, curr_head[k], alpha, 0)
+                            write_frame_out(blended, start_frame + processed_count + 1)
+
+                        if is_eof or clip_ov == 0:
+                            for f in postprocessed_chunk[clip_ov:]:
+                                write_frame_out(f, start_frame + processed_count + 1)
+                            prev_tail = []
+                        else:
+                            for f in postprocessed_chunk[clip_ov : step + clip_ov]:
+                                write_frame_out(f, start_frame + processed_count + 1)
+                            prev_tail = postprocessed_chunk[step + clip_ov :]
+
+                    chunk_idx += 1
+            else:
+                for frame_idx, frame in enumerate(reader):
+                    if self._cancelled:
+                        self.logger.warning("Pipeline cancelled by user.")
+                        break
+
+                    while self._paused and not self._cancelled:
+                        time.sleep(0.1)
+
+                    if frame_idx < start_frame:
+                        continue
+
+                    governor.wait_if_needed()
+
+                    input_for_ai = self._preprocess_frame(frame)
+
+                    is_dup, prev_result = dedup.check_duplicate(input_for_ai)
+                    if is_dup and prev_result is not None:
+                        out_frame = prev_result
+                    else:
+                        out_frame = upscale_with_tiling(
+                            input_for_ai,
+                            upscale_fn=upscale_tile,
+                            scale=scale,
+                            target_scale=target_scale,
+                            tile_size=self.config.inference.tile_size,
+                            tile_overlap=self.config.inference.tile_overlap,
                         )
+                        out_frame = self._postprocess_frame(out_frame, frame, out_w, out_h)
+                        dedup.register_result(out_frame)
 
-                current_writer.write_frame(out_frame)
-                frames_in_curr_segment += 1
-                processed_count += 1
-
-                # Segment rollover for checkpointing
-                if self.config.checkpoint.enabled and frames_in_curr_segment >= interval:
-                    current_writer.close()
-                    seg_file = chk_mgr.get_segment_path(current_segment_idx)
-                    segments.append(str(seg_file))
-                    chk_mgr.save_state(processed_frames=frame_idx + 1, segments=segments, completed=False)
-                    self.logger.info(f"Checkpoint saved: Segment {current_segment_idx} ({frame_idx + 1} frames total)")
-                    current_writer = None
-                    current_segment_idx += 1
-                    frames_in_curr_segment = 0
-
-                # Progress reporting
-                elapsed = time.time() - start_time
-                fps_stat = processed_count / max(0.001, elapsed)
-                remain_frames = max(0, meta.total_frames - (frame_idx + 1))
-                eta_sec = remain_frames / max(0.001, fps_stat)
-
-                if self.on_progress:
-                    self.on_progress(
-                        frame_idx + 1,
-                        meta.total_frames,
-                        fps_stat,
-                        eta_sec,
-                        governor.get_current_metrics(),
-                        dedup.skip_rate,
-                    )
+                    write_frame_out(out_frame, frame_idx + 1)
         finally:
             if is_main_thread and old_sigint is not None:
                 try:

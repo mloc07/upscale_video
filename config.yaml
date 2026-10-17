@@ -13,6 +13,8 @@ inference:
   tile_size: 256            # 0 = không chia tile
   tile_overlap: 16
   batch_size: 1
+  clip_length: 16           # Số khung hình mỗi đoạn cho VideoUpscaleEngine
+  clip_overlap: 2           # Số khung gối đầu để cross-fade chống giật chỗ nối
 
 frame_saving:
   enable_dedup: true
