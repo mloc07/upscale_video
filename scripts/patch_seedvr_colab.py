@@ -286,7 +286,17 @@ def patch_seedvr_core(repo_dir: str | Path = "seedvr_core"):
     (apex_dir / "__init__.py").write_text('"""Standalone apex shim."""\n', encoding="utf-8")
     apex_norm_file = apex_dir / "normalization.py"
     apex_norm_file.write_text(APEX_SHIM_NORMALIZATION, encoding="utf-8")
-    print(f"[Patch] Đã tạo gói tương thích Apex shim tại: {apex_norm_file}")
+    # 8. Optimize configs_3b/main.yaml with init_with_meta_device to prevent CPU RAM OOM (SIGKILL -9)
+    config_yaml = repo_path / "configs_3b" / "main.yaml"
+    if config_yaml.exists():
+        cfg_content = config_yaml.read_text(encoding="utf-8")
+        if "init_with_meta_device:" not in cfg_content:
+            cfg_content = cfg_content.replace(
+                "dit:\n  model:",
+                "dit:\n  init_with_meta_device: True\n  model:",
+            )
+            config_yaml.write_text(cfg_content, encoding="utf-8")
+            print("[Patch] Đã kích hoạt 'init_with_meta_device: True' để tiết kiệm RAM, chống OOM (SIGKILL -9).")
 
     print("[Patch] Hoàn tất toàn bộ vá lỗi môi trường cho SeedVR!")
 
