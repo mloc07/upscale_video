@@ -292,6 +292,19 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
         if not frames:
             return []
 
+        orig_h, orig_w = frames[0].shape[:2]
+        target_w = orig_w * self.scale
+        target_h = orig_h * self.scale
+
+        # Ensure temporal dimension satisfies T % 4 == 1 required by Causal VAE
+        T_orig = len(frames)
+        if T_orig % 4 != 1:
+            k = (T_orig - 1) // 4 + 1
+            T_target = 4 * k + 1
+            padded_frames = list(frames) + [frames[-1]] * (T_target - T_orig)
+        else:
+            padded_frames = frames
+
         # If real neural model is loaded and GPU is available
         if self.model == "SeedVR2_Loaded" and self.runner is not None:
             try:
@@ -304,14 +317,13 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
                 import models.dit_v2.na as na
                 from torchvision.transforms import Compose, Lambda, Normalize
 
-                # Determine target resolution based on orientation
-                orig_h, orig_w = frames[0].shape[:2]
+                # Determine internal inference resolution based on orientation
                 if orig_h >= orig_w:
                     res_h, res_w = 1280, 720
                 else:
                     res_h, res_w = 720, 1280
 
-                video_np = np.stack(frames, axis=0)
+                video_np = np.stack(padded_frames, axis=0)
                 video_tensor = torch.from_numpy(video_np).permute(0, 3, 1, 2).float() / 255.0
                 transform = Compose([
                     NaResize(resolution=(res_h * res_w) ** 0.5, mode="area", downsample_only=False),
@@ -380,7 +392,17 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
                 if out.ndim == 4:
                     out = out.permute(1, 2, 3, 0)
                 out_np = out.clip(-1, 1).mul_(0.5).add_(0.5).mul_(255).round().to(torch.uint8).numpy()
-                return [frame for frame in out_np]
+
+                # Slice back to original frame count
+                out_np = out_np[:T_orig]
+
+                # Ensure dimensions match target_w x target_h
+                result_frames = []
+                for f in out_np:
+                    if f.shape[1] != target_w or f.shape[0] != target_h:
+                        f = cv2.resize(f, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
+                    result_frames.append(f)
+                return result_frames
 
             except Exception as e:
                 print(f"[SeedVR2 Engine] Lỗi khi xử lý clip DiT: {e}. Tự động dùng Lanczos dự phòng.")
@@ -390,9 +412,6 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
         # High-quality fallback processing (Lanczos 2x) for unit testing, CPU, or error recovery
         upscaled_frames = []
         for frame in frames:
-            h, w = frame.shape[:2]
-            target_w = w * self.scale
-            target_h = h * self.scale
             up = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
             upscaled_frames.append(up)
 
