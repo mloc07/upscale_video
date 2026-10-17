@@ -5,7 +5,8 @@ Fixes:
 2. Ensures official `color_fix.py` (with `wavelet_reconstruction`) is in place.
 3. Provides native PyTorch SDPA fallback for `flash_attn_varlen_func` on GPUs without FlashAttention
    (such as NVIDIA Tesla T4 Turing / CC 7.5 on Colab, RTX 3050, and Windows).
-4. Handles both single file paths and directories for `--video_path`.
+4. Provides native PyTorch fallback (LayerNorm / Diffusers RMSNorm) for NVIDIA Apex `FusedRMSNorm` / `FusedLayerNorm`.
+5. Handles both single file paths and directories for `--video_path`.
 """
 
 from __future__ import annotations
@@ -113,6 +114,73 @@ import torch.nn.functional as F
 __all__ = ["flash_attn_varlen_func"]
 '''
 
+APEX_NORM_TARGET = """        if norm_type == "fusedln":
+            from apex.normalization import FusedLayerNorm
+
+            return FusedLayerNorm(
+                normalized_shape=dim,
+                elementwise_affine=elementwise_affine,
+                eps=eps,
+            )
+
+        if norm_type == "fusedrms":
+            from apex.normalization import FusedRMSNorm
+
+            return FusedRMSNorm(
+                normalized_shape=dim,
+                elementwise_affine=elementwise_affine,
+                eps=eps,
+            )"""
+
+APEX_NORM_REPLACEMENT = """        if norm_type == "fusedln":
+            try:
+                from apex.normalization import FusedLayerNorm
+                return FusedLayerNorm(
+                    normalized_shape=dim,
+                    elementwise_affine=elementwise_affine,
+                    eps=eps,
+                )
+            except (ImportError, ModuleNotFoundError):
+                return nn.LayerNorm(
+                    normalized_shape=dim,
+                    eps=eps,
+                    elementwise_affine=elementwise_affine,
+                )
+
+        if norm_type == "fusedrms":
+            try:
+                from apex.normalization import FusedRMSNorm
+                return FusedRMSNorm(
+                    normalized_shape=dim,
+                    elementwise_affine=elementwise_affine,
+                    eps=eps,
+                )
+            except (ImportError, ModuleNotFoundError):
+                return RMSNorm(
+                    dim=dim,
+                    eps=eps,
+                    elementwise_affine=elementwise_affine,
+                )"""
+
+APEX_SHIM_NORMALIZATION = '''"""Standalone apex.normalization shim for Colab and PyTorch environments."""
+import torch
+from torch import nn
+from diffusers.models.normalization import RMSNorm
+
+class FusedLayerNorm(nn.LayerNorm):
+    def __init__(self, normalized_shape, eps=1e-5, elementwise_affine=True, **kwargs):
+        super().__init__(normalized_shape=normalized_shape, eps=eps, elementwise_affine=elementwise_affine)
+
+class FusedRMSNorm(RMSNorm):
+    def __init__(self, normalized_shape=None, dim=None, eps=1e-5, elementwise_affine=True, **kwargs):
+        d = dim if dim is not None else normalized_shape
+        if isinstance(d, (list, tuple)):
+            d = d[0]
+        super().__init__(dim=d, eps=eps, elementwise_affine=elementwise_affine)
+
+__all__ = ["FusedLayerNorm", "FusedRMSNorm"]
+'''
+
 
 def patch_seedvr_core(repo_dir: str | Path = "seedvr_core"):
     repo_path = Path(repo_dir)
@@ -198,6 +266,27 @@ def patch_seedvr_core(repo_dir: str | Path = "seedvr_core"):
     shim_file = shim_dir / "__init__.py"
     shim_file.write_text(FLASH_ATTN_SHIM, encoding="utf-8")
     print(f"[Patch] Đã tạo gói tương thích FlashAttention shim tại: {shim_file}")
+
+    # 6. Patch Apex FusedRMSNorm / FusedLayerNorm in models/dit_v2/normalization.py & models/dit/normalization.py
+    norm_targets = [
+        repo_path / "models" / "dit_v2" / "normalization.py",
+        repo_path / "models" / "dit" / "normalization.py",
+    ]
+    for norm_file in norm_targets:
+        if norm_file.exists():
+            norm_content = norm_file.read_text(encoding="utf-8")
+            if APEX_NORM_TARGET in norm_content:
+                norm_content = norm_content.replace(APEX_NORM_TARGET, APEX_NORM_REPLACEMENT)
+                norm_file.write_text(norm_content, encoding="utf-8")
+                print(f"[Patch] Đã thêm PyTorch native fallback cho Apex Norm trong: {norm_file}")
+
+    # 7. Create standalone apex shim package in seedvr_core
+    apex_dir = repo_path / "apex"
+    apex_dir.mkdir(parents=True, exist_ok=True)
+    (apex_dir / "__init__.py").write_text('"""Standalone apex shim."""\n', encoding="utf-8")
+    apex_norm_file = apex_dir / "normalization.py"
+    apex_norm_file.write_text(APEX_SHIM_NORMALIZATION, encoding="utf-8")
+    print(f"[Patch] Đã tạo gói tương thích Apex shim tại: {apex_norm_file}")
 
     print("[Patch] Hoàn tất toàn bộ vá lỗi môi trường cho SeedVR!")
 
