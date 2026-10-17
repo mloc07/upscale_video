@@ -1,0 +1,10 @@
+{
+  "clip": "clip_C",
+  "frames": 9,
+  "resolution_in": "720x1280",
+  "resolution_out": "720x1280",
+  "time_sec": 275.27,
+  "fps": 0.03,
+  "peak_vram_gb": 7.47,
+  "output_file": "/content/upscale_video/eval/results/seedvr2/clip_C_seedvr2.mp4"
+}
