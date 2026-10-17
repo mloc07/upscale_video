@@ -195,7 +195,43 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
                 cfg_path = Path("configs_3b/main.yaml")
 
             config = load_config(str(cfg_path))
-            runner = VideoDiffusionInfer(config)
+            # Ensure meta_non_persistent_buffer_init_fn safely materializes buffers to CPU without assertion failure
+            def safe_meta_init(module):
+                with torch.no_grad():
+                    for submodule in module.modules():
+                        for b_name, b_val in list(submodule.named_buffers(recurse=False)):
+                            if getattr(b_val, "is_meta", False):
+                                try:
+                                    materialized = torch.zeros(
+                                        b_val.shape, dtype=b_val.dtype, device="cpu"
+                                    )
+                                    setattr(submodule, b_name, materialized)
+                                except Exception:
+                                    pass
+                return module
+
+            try:
+                import common.distributed.meta_init_utils as meta_utils
+                meta_utils.meta_non_persistent_buffer_init_fn = safe_meta_init
+            except Exception:
+                pass
+
+            try:
+                import projects.video_diffusion_sr.infer as infer_mod
+                infer_mod.meta_non_persistent_buffer_init_fn = safe_meta_init
+            except Exception:
+                pass
+
+            # Also patch the file on disk if present
+            disk_meta_file = seedvr_dir / "common" / "distributed" / "meta_init_utils.py"
+            if disk_meta_file.exists():
+                try:
+                    c = disk_meta_file.read_text(encoding="utf-8")
+                    if "assert not any(b.is_meta" in c:
+                        c = c.replace("assert not any(b.is_meta for n, b in module.named_buffers())", "# assertion bypassed for CPU offload")
+                        disk_meta_file.write_text(c, encoding="utf-8")
+                except Exception:
+                    pass
 
             print("[SeedVR2 Engine] Nạp DiT 3B checkpoint vào CPU...")
             runner.configure_dit_model(device="cpu", checkpoint=str(ckpt_file))

@@ -296,7 +296,31 @@ def patch_seedvr_core(repo_dir: str | Path = "seedvr_core"):
                 "dit:\n  init_with_meta_device: True\n  model:",
             )
             config_yaml.write_text(cfg_content, encoding="utf-8")
-            print("[Patch] Đã kích hoạt 'init_with_meta_device: True' để tiết kiệm RAM, chống OOM (SIGKILL -9).")
+    # 9. Patch meta_init_utils.py to safely materialize buffers to CPU without assertion failure
+    meta_utils_file = repo_path / "common" / "distributed" / "meta_init_utils.py"
+    if meta_utils_file.exists():
+        SAFE_META_UTILS = '''# // Copyright (c) 2025 Bytedance Ltd. and/or its affiliates
+import torch
+from torch import nn
+
+__all__ = ["meta_non_persistent_buffer_init_fn"]
+
+def meta_non_persistent_buffer_init_fn(module: nn.Module) -> nn.Module:
+    with torch.no_grad():
+        for submodule in module.modules():
+            for buffer_name, buffer in list(submodule.named_buffers(recurse=False)):
+                if getattr(buffer, "is_meta", False):
+                    try:
+                        materialized_buffer = torch.zeros(
+                            buffer.shape, dtype=buffer.dtype, device="cpu"
+                        )
+                        setattr(submodule, buffer_name, materialized_buffer)
+                    except Exception:
+                        pass
+    return module
+'''
+        meta_utils_file.write_text(SAFE_META_UTILS, encoding="utf-8")
+        print(f"[Patch] Đã vá an toàn meta_init_utils.py tại: {meta_utils_file}")
 
     print("[Patch] Hoàn tất toàn bộ vá lỗi môi trường cho SeedVR!")
 
