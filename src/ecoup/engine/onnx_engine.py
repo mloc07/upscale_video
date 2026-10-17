@@ -6,7 +6,10 @@ import os
 from pathlib import Path
 from typing import Optional
 import numpy as np
-import onnxruntime as ort
+try:
+    import onnxruntime as ort
+except ImportError:
+    ort = None
 
 from ecoup.engine.base import UpscaleEngine
 
@@ -15,7 +18,7 @@ class OnnxUpscaleEngine(UpscaleEngine):
     """Inference engine powered by ONNX Runtime."""
 
     def __init__(self):
-        self.session: Optional[ort.InferenceSession] = None
+        self.session: Optional[object] = None
         self.input_name: str = ""
         self.output_name: str = ""
         self.precision: str = "fp16"
@@ -23,6 +26,10 @@ class OnnxUpscaleEngine(UpscaleEngine):
         self.scale: int = 4
 
     def load(self, model_path: str | Path, precision: str = "fp16", provider: str = "auto") -> None:
+        if ort is None:
+            raise ImportError(
+                "onnxruntime chưa được cài đặt. Để sử dụng mô hình ONNX, vui lòng chạy: pip install onnxruntime-gpu"
+            )
         model_str = str(Path(model_path).resolve())
         if not os.path.exists(model_str):
             raise FileNotFoundError(f"ONNX model file not found: {model_str}")
