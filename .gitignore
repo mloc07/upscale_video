@@ -44,5 +44,4 @@ models/*.bin
 scratch/
 
 # Evaluation
-eval/clips/
-eval/results/
+eval/

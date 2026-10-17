@@ -329,14 +329,14 @@ def create_ui():
                 denoise_sl = gr.Slider(
                     minimum=0,
                     maximum=100,
-                    value=0,
+                    value=10,
                     step=5,
                     label="Khử nhiễu (Denoise %)",
                 )
                 recover_sl = gr.Slider(
                     minimum=0,
                     maximum=50,
-                    value=0,
+                    value=10,
                     step=5,
                     label="Khôi phục gốc (Recover %)",
                 )
@@ -352,7 +352,7 @@ def create_ui():
                 sharpen_sl = gr.Slider(
                     minimum=0,
                     maximum=100,
-                    value=25,
+                    value=15,
                     step=5,
                     label="Làm nét (Sharpen %)",
                 )

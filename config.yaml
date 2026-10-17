@@ -40,3 +40,13 @@ checkpoint:
   enabled: true
   dir: .ecoup_state
   interval_frames: 300
+
+# Preset mặc định: Phục chế video người thật (720p -> 1440p)
+pre_process:
+  denoise: 0.10             # Khử artifact nén nhẹ trước AI (0.0 - 1.0)
+
+post_process:
+  color_fix: true           # Khắc phục lệch màu & nhấp nháy ánh sáng bằng Wavelet
+  recover_detail: 0.10      # Trộn 10% ảnh gốc phóng bicubic để bảo vệ nhận dạng mặt
+  sharpen: 0.15             # Làm nét nhẹ viền mi mắt và sợi tóc (0.0 - 1.0)
+  film_grain: 0.0           # Hạt film grain mịn chống sáp (0.005 - 0.015 nếu cần, mặc định tắt)

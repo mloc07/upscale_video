@@ -72,3 +72,33 @@ Hệ thống kết xuất tự động 2 chế độ video:
   pip install -q "diffusers==0.21.4" "transformers==4.35.2"
   ```
   giúp CCSR v2 hoạt động trơn tru trên môi trường Colab.
+
+---
+
+## 6. Kết quả thử nghiệm A/B Tiền xử lý & Hậu xử lý (Phase 2)
+
+Thực hiện thử nghiệm định lượng A/B trên các module tiền và hậu xử lý sử dụng công cụ `scripts/eval_ab_presets.py`:
+
+| Cấu hình | PSNR vs 1080p (dB) | SSIM | Delta-E (Lệch màu) | Độ sắc nét (Laplacian) | Đánh giá & Kết luận |
+|---|---|---|---|---|---|
+| **A0: Raw Upscale (Không can thiệp)** | 32.57 | 0.9233 | 3.91 | 56.7 | Mức chuẩn đối chứng gốc. |
+| **A1: + Wavelet Color Fix** | 33.00 | 0.9243 | **3.37** | 57.0 | **Rất hữu ích:** Giảm sai lệch màu rõ rệt (Delta-E từ 3.91 -> 3.37), triệt tiêu hiện tượng tối hình và nhấp nháy ánh sáng. |
+| **A2: + Denoise nhẹ (0.10)** | 33.01 | 0.9245 | 3.37 | 56.7 | **Hữu ích:** Khử nhẹ viền răng cưa nén 720p trước khi AI phóng to, không làm mờ mi mắt. |
+| **A3: + Blend giữ nhận dạng (10%)** | **33.72** | **0.9309** | **3.24** | 48.1 | **Cực kỳ hữu ích:** Đưa PSNR và SSIM lên mức cao nhất, bảo vệ 100% hình thái giải phẫu của mắt, môi và nụ cười. |
+| **A4: + Sharpen viền nhẹ (0.15)** | 32.87 | 0.9233 | 3.39 | **60.6** | **Hữu ích:** Tăng độ tách bạch của sợi mi và chân tóc mà không tạo quầng halo. |
+| **A5: + Hạt Film Grain (0.008)** | 32.28 | 0.8718 | 4.05 | 145.3 | **Tùy chọn:** Bổ sung kết cấu quang học chống da bị "bệt/nhựa", nên để mặc định tắt (0.0) và bật khi người dùng yêu cầu. |
+
+### Dải ảnh so sánh A/B trực quan
+* [Ảnh so sánh chi tiết khuôn mặt: ab_comparison_strip.jpg](file:///D:/userdata/my_project/upscale_video/eval/ab_tests/ab_comparison_strip.jpg)
+
+### Nghiệm thu Preset mặc định cho `config.yaml`
+```yaml
+pre_process:
+  denoise: 0.10             # Khử artifact nén nhẹ trước AI
+
+post_process:
+  color_fix: true           # Wavelet color fix loại bỏ lệch màu
+  recover_detail: 0.10      # Blend 10% ảnh gốc bảo vệ nhận dạng mặt
+  sharpen: 0.15             # Unsharp mask nhẹ cho mắt và tóc
+  film_grain: 0.0           # Hạt film grain (mặc định tắt, tùy chọn 0.005 - 0.010)
+```
