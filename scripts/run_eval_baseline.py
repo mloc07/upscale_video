@@ -94,8 +94,14 @@ def run_clip_evaluation(
         engine = OnnxUpscaleEngine()
         engine.load(model_path, provider="auto")
         model_scale = 2
+    elif model_name.lower() in ("seedvr2", "seedvr"):
+        from ecoup.engine.seedvr2_engine import SeedVR2UpscaleEngine
+        print("[Eval] Đang khởi tạo SeedVR2 Video Engine...")
+        engine = SeedVR2UpscaleEngine(scale=2)
+        model_scale = 2
+        model_path = Path("models/SeedVR2")
     else:
-        raise ValueError(f"Model không xác định: {model_name}. Hỗ trợ: ccsr, nomosuni, realesrgan")
+        raise ValueError(f"Model không xác định: {model_name}. Hỗ trợ: ccsr, nomosuni, realesrgan, seedvr2")
 
     # Find test clips (excluding _1080p ground truth references)
     clip_files = sorted(clips_dir.glob("clip_*.mp4"))
@@ -116,6 +122,7 @@ def run_clip_evaluation(
         print(f"Đang xử lý: {stem} ({meta.width}x{meta.height}, {meta.total_frames} frames, {meta.duration_seconds:.2f}s)")
         print(f"{'=' * 60}")
 
+        from ecoup.config import PostProcessConfig, PreProcessConfig
         cfg = AppConfig(
             model=ModelConfig(
                 name=model_name,
@@ -128,11 +135,20 @@ def run_clip_evaluation(
                 tile_size=tile_size,
                 tile_overlap=16 if tile_size > 0 else 0,
                 control_strength=control_strength,
+                clip_length=16,
+                clip_overlap=2,
             ),
             thermal=ThermalConfig(enabled=False),
             frame_saving=FrameSavingConfig(enable_dedup=False),
             checkpoint=CheckpointConfig(enabled=False),
             encode=EncodeConfig(codec="auto", copy_audio=True),
+            pre_process=PreProcessConfig(denoise=0.10),
+            post_process=PostProcessConfig(
+                color_fix=True,
+                recover_detail=0.10,
+                sharpen=0.15,
+                film_grain=0.0,
+            ),
         )
 
         pipeline = UpscalePipeline(config=cfg, engine=engine)
@@ -177,7 +193,7 @@ def run_clip_evaluation(
 
 def main():
     parser = argparse.ArgumentParser(description="Chạy suy luận benchmark trên các clip đánh giá.")
-    parser.add_argument("--model", type=str, required=True, choices=["ccsr", "nomosuni", "realesrgan"], help="Tên model")
+    parser.add_argument("--model", type=str, required=True, choices=["ccsr", "nomosuni", "realesrgan", "seedvr2"], help="Tên model")
     parser.add_argument("--clips-dir", type=Path, default=Path("eval/clips"), help="Thư mục clip đầu vào")
     parser.add_argument("--results-dir", type=Path, default=Path("eval/results"), help="Thư mục lưu kết quả")
     parser.add_argument("--tile-size", type=int, default=0, help="Kích thước tile (0 = toàn khung)")

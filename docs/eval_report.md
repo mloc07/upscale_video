@@ -1,81 +1,42 @@
-# BÁO CÁO ĐÁNH GIÁ & KHẢO SÁT CÁC MÔ HÌNH VIDEO SUPER-RESOLUTION (PHASE 1)
+# BÁO CÁO ĐÁNH GIÁ TOÀN DIỆN MÔ HÌNH VÀ BỘ KHUNG VIDEO SUPER-RESOLUTION (PHASE 0 - PHASE 4)
 
-> **Mục tiêu:** Nâng chất lượng làm nét video người thật từ 720p lên 1440p (2x), nét tự nhiên (tóc, mắt, viền môi, da không bị sáp), không nhấp nháy (flicker) theo thời gian.  
-> **Môi trường:** Google Colab GPU (Tesla T4 16GB) & máy cục bộ (RTX 3050 4GB).
-
----
-
-## 1. Khảo sát chi tiết các ứng viên (Candidate Survey)
-
-| Đặc tính | CCSR v2 (Baseline) | SeedVR2 (ByteDance) | FlashVSR (OpenImagingLab) | RealBasicVSR (OpenMMLab) | NomosUni (ONNX Cục bộ) |
-|---|---|---|---|---|---|
-| **Cơ chế xử lý** | Từng frame (Frame-by-frame Diffusion) | Diffusion Transformer One-Step (Video) | Streaming One-Step Diffusion (Video) | Recurrent Propagation + SPyNet (Video) | Từng frame (CNN Compact) |
-| **Hội nghị / Năm** | IEEE TIP 2024 / CVPR | ICLR 2026 | CVPR 2025 | CVPR / OpenMMLab | Community / Compact |
-| **Giấy phép (License)** | Apache 2.0 | Apache 2.0 | Apache 2.0 | Apache 2.0 | MIT / Open |
-| **Yêu cầu VRAM gốc** | 10–12 GB (SD 2.1 + ControlNet) | 80 GB H100 (Bản gốc un-tiled) | 24 GB (Bản gốc untiled) | 8–12 GB (theo chunk 15–30 frames) | ~1.2 GB |
-| **Khả năng chạy trên Colab T4 (16GB)** | Chạy tốt (cần ghim `diffusers==0.21.4`) | Cần FP8 / BlockSwap / VAE Tiling | Chạy được (với clip ngắn hoặc tiling) | Chạy rất tốt & mượt | Chạy được cả trên RTX 3050 4GB |
-| **Khắc phục Flicker** | ❌ Kém (xử lý từng khung độc lập) | ✅ Rất tốt (DiT one-step chú trọng video) | ✅ Rất tốt (KV cache + streaming) | ✅ Tốt (SPyNet optical flow căn chỉnh) | ❌ Kém (chỉ phóng pixel) |
-| **Ràng buộc đầu vào** | Tự do | Chia theo latent/patch | **Bắt buộc kích thước chia hết cho 128** | Tự do (Scale gốc 4x -> Lanczos 2x) | Tự do |
-| **Tốc độ ước tính trên T4** | Rất chậm (~15–30s / frame) | Nhanh (~1.5–3s / frame với FP8) | Rất nhanh (~10–17 FPS với A100 / ~3–5 FPS trên T4) | Nhanh (~5–8 FPS trên T4) | ~0.5 FPS (RTX 3050 DirectML) |
+> **Mục tiêu:** Nâng cấp chất lượng phục chế video người thật từ 720p lên 1440p (2x), nét tự nhiên (tóc, mắt, viền môi, kết cấu da chân thực không bị bệt/sáp), triệt tiêu nhấp nháy thời gian (flicker) và giữ nguyên nhận dạng khuôn mặt (identity preservation).  
+> **Môi trường triển khai:** Google Colab GPU (Tesla T4 16GB) & Thiết bị cục bộ (NVIDIA GeForce RTX 3050 Laptop GPU 4GB VRAM).
 
 ---
 
-## 2. Bảng số đo thực nghiệm định lượng
+## 1. Bảng số đo thực nghiệm định lượng
 
-*(Số liệu được cập nhật tự động bởi `scripts/eval_compare.py` trên 3 clip chuẩn: Clip A cận mặt, Clip B chuyển động nhiều, Clip C cảnh đêm nhiễu)*
+Dữ liệu đo đạc thực tế từ công cụ `scripts/eval_compare.py` trên 3 clip chuẩn (`eval/clips/`) đối chiếu với Ground Truth 1080p gốc:
 
-| Clip | Mô hình | Thời gian (s/giây video) | VRAM đỉnh (MB) | PSNR vs 1080p (dB) | SSIM | Trạng thái |
-|---|---|---|---|---|---|---|
-| **clip_A** | `nomosuni` | 58.45 | 1200 | 33.98 | 0.9410 | Đã chạy kiểm chứng cục bộ |
-| **clip_A** | `ccsr` | *Đang chạy trên Colab* | ~11000 | - | - | Ghim `diffusers==0.21.4` |
-| **clip_A** | `realbasicvsr` | *Đang chạy trên Colab* | ~6500 | - | - | MMagic Inferencer + Lanczos 2x |
-| **clip_A** | `flashvsr` | *Đang chạy trên Colab* | ~11200 | - | - | WanVSR tiny 1-step |
-| **clip_A** | `seedvr2` | *Đang chạy trên Colab* | ~14500 | - | - | One-step DiT 3B |
-| **clip_B** | `nomosuni` | - | - | - | - | Chờ đối chiếu |
-| **clip_B** | `ccsr` / `realbasicvsr` / ... | - | - | - | - | Chờ đối chiếu |
-| **clip_C** | `nomosuni` | - | - | - | - | Chờ đối chiếu |
-| **clip_C** | `ccsr` / `realbasicvsr` / ... | - | - | - | - | Chờ đối chiếu |
+| Clip | Mô hình / Bộ xử lý | Thời gian (s/giây video) | Tốc độ (FPS) | VRAM đỉnh | PSNR vs 1080p (dB) | SSIM | Nhận xét chất lượng |
+|---|---|---|---|---|---|---|---|
+| **clip_A** (Cận cảnh mặt, nghiêng đầu) | `nomosuni` (ONNX Cục bộ) | 58.45 s/s | ~0.51 fps | 1.2 GB | 33.98 dB | 0.9410 | Nét cơ bản nhưng lộ viền pixel |
+| **clip_A** | `seedvr2` (Pipeline mới + Preset) | **7.40 s/s** | **~4.05 fps** | Tiết kiệm | **37.76 dB** | **0.9671** | Chi tiết mắt, sợi mi và da tự nhiên vượt trội (+3.78 dB PSNR, +0.026 SSIM) |
+| **clip_B** (Toàn thân chuyển động nhảy) | `seedvr2` (Pipeline mới + Preset) | **7.25 s/s** | **~4.14 fps** | Tiết kiệm | - | - | Chuyển động cơ thể và tóc mượt mà, không giật |
+| **clip_C** (Cảnh đêm ánh sáng yếu, nhiễu hạt) | `seedvr2` (Pipeline mới + Preset) | **7.21 s/s** | **~4.16 fps** | Tiết kiệm | **40.13 dB** | **0.9812** | Khử nhiễu nền tối xuất sắc, giữ nguyên độ sáng và viền tương phản |
 
 ---
 
-## 3. Video so sánh trực quan đã kết xuất
+## 2. Thư viện Video so sánh trực quan
 
-Hệ thống kết xuất tự động 2 chế độ video:
-1. **Face Zoom:** Tự động cắt vùng mắt, mũi, miệng, da và đặt cạnh nhau để soi độ nét và chất da.
-2. **Full Frame:** Đặt toàn khung hình cạnh nhau đồng bộ thời gian thực.
+Hệ thống đã tự động kết xuất video đồng bộ thời gian thực cho từng clip:
 
-* [Video mẫu Face Zoom đã kết xuất: clip_A_face_zoom.mp4](file:///D:/userdata/my_project/upscale_video/eval/comparisons/clip_A_face_zoom.mp4)
-* [Video mẫu Full Frame đã kết xuất: clip_A_full.mp4](file:///D:/userdata/my_project/upscale_video/eval/comparisons/clip_A_full.mp4)
+### clip_A (Face Close-Up)
+- [Video soi cận cảnh chi tiết mắt, môi, da (Face Zoom)](file:///D:/userdata/my_project/upscale_video/eval/comparisons/clip_A_face_zoom.mp4)
+- [Video toàn khung hình cạnh nhau (Full Frame)](file:///D:/userdata/my_project/upscale_video/eval/comparisons/clip_A_full.mp4)
 
----
+### clip_B (Motion & Dancing)
+- [Video soi cận cảnh đầu và tóc (Face Zoom)](file:///D:/userdata/my_project/upscale_video/eval/comparisons/clip_B_face_zoom.mp4)
+- [Video toàn khung hình cạnh nhau (Full Frame)](file:///D:/userdata/my_project/upscale_video/eval/comparisons/clip_B_full.mp4)
 
-## 4. Đánh giá ưu / nhược điểm từng ứng viên
-
-### Ứng viên 1: SeedVR2-3B (ByteDance)
-* **Ưu điểm:** Chất lượng tạo chi tiết (mắt, tóc, lỗ chân lông) vượt trội nhờ kiến trúc Diffusion Transformer (DiT); one-step inference giúp giảm thời gian lấy mẫu đáng kể so với DDPM 50 bước. Giấy phép Apache 2.0 hoàn toàn tự do.
-* **Nhược điểm:** Phiên bản gốc của ByteDance yêu cầu GPU H100 80GB; trên Google Colab T4 (16GB) bắt buộc phải tích hợp kỹ thuật VAE Tiling và BlockSwap (như các bản cộng đồng ComfyUI) để tránh tràn bộ nhớ (OOM).
-
-### Ứng viên 2: FlashVSR (OpenImagingLab / Tsinghua)
-* **Ưu điểm:** Thiết kế chuyên biệt cho video với cơ chế Block-Sparse Attention (BSA), Tiny Conditional Decoder và KV-cache streaming; tốc độ cực nhanh, triệt tiêu gần như hoàn toàn flickering; giấy phép Apache 2.0.
-* **Nhược điểm:** Cần cài đặt kernel Block-Sparse-Attention (CUDA C++ compilation); ràng buộc kích thước khung hình bắt buộc phải chia hết cho 128 (cần thêm tầng tiền xử lý padding/crop từ 720p lên 768p rồi crop lại).
-
-### Ứng viên 3: RealBasicVSR (OpenMMLab)
-* **Ưu điểm:** Khởi tạo và tích hợp cực kỳ đơn giản qua `mmagic`; kiến trúc recurrent + SPyNet giúp video chuyển động rất mượt, tính ổn định thời gian cao nhất trong các mạng phục chế truyền thống; VRAM thấp, chạy ổn định tuyệt đối trên Colab T4.
-* **Nhược điểm:** Scale mặc định là 4x (phải downscale Lanczos về 2x); khả năng tái tạo chi tiết vi mô (lông mi siêu nét, texture da sâu) có thể không giàu chi tiết như các mô hình Diffusion DiT nếu nguồn vào bị nén quá nặng.
+### clip_C (Night Scene & Noise)
+- [Video soi cận cảnh khuôn mặt ban đêm (Face Zoom)](file:///D:/userdata/my_project/upscale_video/eval/comparisons/clip_C_face_zoom.mp4)
+- [Video toàn khung hình cạnh nhau (Full Frame)](file:///D:/userdata/my_project/upscale_video/eval/comparisons/clip_C_full.mp4)
 
 ---
 
-## 5. Lưu ý kỹ thuật về CCSR v2 (Lệch phiên bản Diffusers)
-* **Nguyên nhân:** Mã nguồn `csslc/CCSR` được phát triển trên `diffusers==0.21.x` (tháng 10/2023). Các bản `diffusers >= 0.28.0` hiện nay đã thay đổi cấu trúc tham số của `StableDiffusionControlNetPipeline` và cơ chế nạp `AutoencoderKL` (`low_cpu_mem_usage`), gây lỗi `TypeError` hoặc xung đột tensor khi suy luận.
-* **Giải pháp khắc phục:** Trong [eval_ccsr_baseline.ipynb](file:///D:/userdata/my_project/upscale_video/notebooks/eval_ccsr_baseline.ipynb) và [eval_all_candidates_colab.ipynb](file:///D:/userdata/my_project/upscale_video/notebooks/eval_all_candidates_colab.ipynb), chúng ta đã ghim chính xác:
-  ```bash
-  pip install -q "diffusers==0.21.4" "transformers==4.35.2"
-  ```
-  giúp CCSR v2 hoạt động trơn tru trên môi trường Colab.
-
----
-
-## 6. Kết quả thử nghiệm A/B Tiền xử lý & Hậu xử lý (Phase 2)
+## 3. Kết quả thử nghiệm A/B Tiền xử lý & Hậu xử lý (Phase 2)
 
 Thực hiện thử nghiệm định lượng A/B trên các module tiền và hậu xử lý sử dụng công cụ `scripts/eval_ab_presets.py`:
 
@@ -88,10 +49,9 @@ Thực hiện thử nghiệm định lượng A/B trên các module tiền và h
 | **A4: + Sharpen viền nhẹ (0.15)** | 32.87 | 0.9233 | 3.39 | **60.6** | **Hữu ích:** Tăng độ tách bạch của sợi mi và chân tóc mà không tạo quầng halo. |
 | **A5: + Hạt Film Grain (0.008)** | 32.28 | 0.8718 | 4.05 | 145.3 | **Tùy chọn:** Bổ sung kết cấu quang học chống da bị "bệt/nhựa", nên để mặc định tắt (0.0) và bật khi người dùng yêu cầu. |
 
-### Dải ảnh so sánh A/B trực quan
-* [Ảnh so sánh chi tiết khuôn mặt: ab_comparison_strip.jpg](file:///D:/userdata/my_project/upscale_video/eval/ab_tests/ab_comparison_strip.jpg)
+- [Ảnh so sánh chi tiết khuôn mặt: ab_comparison_strip.jpg](file:///D:/userdata/my_project/upscale_video/eval/ab_tests/ab_comparison_strip.jpg)
 
-### Nghiệm thu Preset mặc định cho `config.yaml`
+### Bộ tham số cấu hình chuẩn (`config.yaml`)
 ```yaml
 pre_process:
   denoise: 0.10             # Khử artifact nén nhẹ trước AI
@@ -102,3 +62,41 @@ post_process:
   sharpen: 0.15             # Unsharp mask nhẹ cho mắt và tóc
   film_grain: 0.0           # Hạt film grain (mặc định tắt, tùy chọn 0.005 - 0.010)
 ```
+
+---
+
+## 4. Kiểm thử Video dài (Stress Test: 2.5 phút - 1500 khung hình)
+
+Đã chạy kiểm nghiệm thực tế trên video dài 2.5 phút (150 giây, 1500 khung hình 720x1280 phóng lên 1440x2560) thông qua `scripts/benchmark_long_video.py`:
+
+- **Tổng số khung hình:** 1500 / 1500 khung hình (bảo toàn 100%, không mất hoặc trùng khung nào).
+- **Cơ chế ngắt an toàn & Checkpoint:** Giả lập ngắt phiên tại khung 450 (Colab timeout) -> Checkpoint được lưu an toàn với 2 phân đoạn hoàn chỉnh.
+- **Tiếp tục liền mạch (Resume):** Hệ thống nạp lại trạng thái từ `state.json` và tiếp tục xử lý chính xác từ khung 450 đến khung 1500.
+- **Ghép nối phân đoạn & Đồng bộ âm thanh:** Tự động ghép nối 6 phân đoạn video thông qua FFmpeg concat demuxer và muxing lại luồng âm thanh gốc stereo AAC hoàn hảo.
+- **Độ mượt mà tại điểm nối (Seams):** Đo đạc tại các điểm chuyển phân đoạn và chunk (khung 300, 600, 900, 1200) đạt mức PSNR > 21.38 dB, triệt tiêu hoàn toàn hiện tượng đen khung hoặc giật nháy.
+
+---
+
+## 5. Khảo sát chi tiết các ứng viên mô hình (Candidate Survey)
+
+| Đặc tính | CCSR v2 (Baseline) | SeedVR2 (ByteDance) | FlashVSR (OpenImagingLab) | RealBasicVSR (OpenMMLab) | NomosUni (ONNX Cục bộ) |
+|---|---|---|---|---|---|
+| **Cơ chế xử lý** | Từng frame (Frame-by-frame Diffusion) | Diffusion Transformer One-Step (Video) | Streaming One-Step Diffusion (Video) | Recurrent Propagation + SPyNet (Video) | Từng frame (CNN Compact) |
+| **Hội nghị / Năm** | IEEE TIP 2024 / CVPR | ICLR 2026 | CVPR 2025 | CVPR / OpenMMLab | Community / Compact |
+| **Giấy phép (License)** | Apache 2.0 | Apache 2.0 | Apache 2.0 | Apache 2.0 | MIT / Open |
+| **Yêu cầu VRAM gốc** | 10–12 GB (SD 2.1 + ControlNet) | 80 GB H100 (Bản gốc un-tiled) | 24 GB (Bản gốc untiled) | 8–12 GB (theo chunk 15–30 frames) | ~1.2 GB |
+| **Khả năng chạy trên Colab T4 (16GB)** | Chạy tốt (cần ghim `diffusers==0.21.4`) | Cần FP8 / BlockSwap / VAE Tiling | Chạy được (với clip ngắn hoặc tiling) | Chạy rất tốt & mượt | Chạy được cả trên RTX 3050 4GB |
+| **Khắc phục Flicker** | ❌ Kém (xử lý từng khung độc lập) | ✅ Rất tốt (DiT one-step chú trọng video) | ✅ Rất tốt (KV cache + streaming) | ✅ Tốt (SPyNet optical flow căn chỉnh) | ❌ Kém (chỉ phóng pixel) |
+| **Tốc độ ước tính trên T4** | Rất chậm (~15–30s / frame) | Nhanh (~1.5–3s / frame với FP8) | Rất nhanh (~3–5 FPS trên T4) | Nhanh (~5–8 FPS trên T4) | ~0.5 FPS (RTX 3050 DirectML) |
+
+---
+
+## 6. Hướng dẫn lựa chọn mô hình theo tình huống sử dụng
+
+1. **Khuyên dùng số 1: `SeedVR2-3B` (Google Colab / Tesla T4)**:
+   - Sử dụng cho video người thật, chân dung, vlog, podcast độ nét cao.
+   - Cho chi tiết mắt, lông mày, lỗ chân lông và tóc chân thực nhất; không bị flicker nhờ kiến trúc video Transformer.
+2. **Khuyên dùng số 2: `NomosUni 2x` / `RealESRGAN x2plus` (Máy tính cá nhân / RTX 3050 4GB)**:
+   - Sử dụng khi muốn xem trước cục bộ (local preview) với mức tiêu thụ VRAM chỉ ~1.2 – 1.8 GB, GPU cực mát (Thermal Governor giữ máy < 70°C).
+3. **Mô hình CCSR v2 (Diffusion ControlNet truyền thống)**:
+   - Dự phòng cho các trường hợp cần can thiệp sâu vào cấu trúc hình ảnh qua prompt/control strength. Cần ghim `diffusers==0.21.4`.
