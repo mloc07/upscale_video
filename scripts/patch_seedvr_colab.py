@@ -252,7 +252,9 @@ def patch_seedvr_core(repo_dir: str | Path = "seedvr_core"):
     for attn_file in attn_targets:
         if attn_file.exists():
             attn_content = attn_file.read_text(encoding="utf-8")
-            if "from flash_attn import flash_attn_varlen_func" in attn_content:
+            if "Native PyTorch SDPA fallback for flash_attn_varlen_func" in attn_content:
+                print(f"[Patch] FlashAttention SDPA fallback đã có sẵn trong: {attn_file}")
+            elif "from flash_attn import flash_attn_varlen_func" in attn_content:
                 attn_content = attn_content.replace(
                     "from flash_attn import flash_attn_varlen_func",
                     FLASH_ATTN_PATCH,
@@ -275,7 +277,9 @@ def patch_seedvr_core(repo_dir: str | Path = "seedvr_core"):
     for norm_file in norm_targets:
         if norm_file.exists():
             norm_content = norm_file.read_text(encoding="utf-8")
-            if APEX_NORM_TARGET in norm_content:
+            if "Native PyTorch fallback for Apex Norm" in norm_content:
+                print(f"[Patch] Apex Norm fallback đã có sẵn trong: {norm_file}")
+            elif APEX_NORM_TARGET in norm_content:
                 norm_content = norm_content.replace(APEX_NORM_TARGET, APEX_NORM_REPLACEMENT)
                 norm_file.write_text(norm_content, encoding="utf-8")
                 print(f"[Patch] Đã thêm PyTorch native fallback cho Apex Norm trong: {norm_file}")
