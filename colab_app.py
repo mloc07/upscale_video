@@ -165,8 +165,8 @@ def run_upscale(
         engine = SeedVR2UpscaleEngine(scale=2)
         model_name = "SeedVR2-3B"
         model_scale = 2
-        engine.load(model_path="models/SeedVR2", precision="fp8", provider="cuda")
-        model_file_str = "models/SeedVR2"
+        engine.load(model_path="ckpts/seedvr2_ema_3b.pth", precision="bfloat16", provider="cuda")
+        model_file_str = "ckpts/seedvr2_ema_3b.pth"
     elif "ccsr" in model_choice.lower():
         from ecoup.engine.ccsr_engine import CcsrUpscaleEngine
         engine = CcsrUpscaleEngine(control_strength=control_strength)
@@ -220,8 +220,8 @@ def run_upscale(
             tile_size=tile_sz,
             tile_overlap=tile_ov,
             control_strength=control_strength,
-            clip_length=16,
-            clip_overlap=2,
+            clip_length=9 if "seedvr" in model_choice.lower() else 16,
+            clip_overlap=1 if "seedvr" in model_choice.lower() else 2,
         ),
         thermal=ThermalConfig(enabled=False),
         frame_saving=FrameSavingConfig(
