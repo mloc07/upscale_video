@@ -233,6 +233,8 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
                 except Exception:
                     pass
 
+            runner = VideoDiffusionInfer(config)
+
             print("[SeedVR2 Engine] Nạp DiT 3B checkpoint vào CPU...")
             runner.configure_dit_model(device="cpu", checkpoint=str(ckpt_file))
             _clear_gpu()
