@@ -60,7 +60,7 @@ def _configure_vae_for_colab(vae):
     if hasattr(vae, "disable_slicing"):
         vae.disable_slicing()
     if hasattr(vae, "set_memory_limit"):
-        vae.set_memory_limit(conv_max_mem=0.05, norm_max_mem=0.05)
+        vae.set_memory_limit(conv_max_mem=0.25, norm_max_mem=0.25)
     for m in vae.modules():
         if hasattr(m, "set_memory_device"):
             m.set_memory_device(None)
