@@ -46,7 +46,28 @@ def _clear_vae_memory(vae):
             if hasattr(m, "memory") and m.memory is not None:
                 m.memory = None
                 count += 1
+            if hasattr(m, "set_memory_device"):
+                m.set_memory_device(None)
+            elif hasattr(m, "memory_device"):
+                m.memory_device = None
     return count
+
+
+def _configure_vae_for_colab(vae):
+    """Disable temporal causal caching and enforce low spatial memory limit for Colab GPU."""
+    if vae is None:
+        return
+    if hasattr(vae, "disable_slicing"):
+        vae.disable_slicing()
+    if hasattr(vae, "set_memory_limit"):
+        vae.set_memory_limit(conv_max_mem=0.05, norm_max_mem=0.05)
+    for m in vae.modules():
+        if hasattr(m, "set_memory_device"):
+            m.set_memory_device(None)
+        elif hasattr(m, "memory_device"):
+            m.memory_device = None
+        if hasattr(m, "memory"):
+            m.memory = None
 
 
 class SeedVR2UpscaleEngine(VideoUpscaleEngine):
@@ -246,10 +267,7 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
             print("[SeedVR2 Engine] Nạp VAE checkpoint vào CPU...")
             runner.configure_vae_model()
             runner.vae.to(dtype=torch.bfloat16)
-            if hasattr(runner.vae, "disable_slicing"):
-                runner.vae.disable_slicing()
-            if hasattr(runner.vae, "set_memory_limit"):
-                runner.vae.set_memory_limit(conv_max_mem=0.15, norm_max_mem=0.15)
+            _configure_vae_for_colab(runner.vae)
             runner.vae.to("cpu")
             _clear_gpu()
 
@@ -345,10 +363,7 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
 
                 # Step 1: VAE Encode on GPU
                 self.runner.vae.to(device=get_device(), dtype=torch.bfloat16)
-                if hasattr(self.runner.vae, "disable_slicing"):
-                    self.runner.vae.disable_slicing()
-                if hasattr(self.runner.vae, "set_memory_limit"):
-                    self.runner.vae.set_memory_limit(conv_max_mem=0.15, norm_max_mem=0.15)
+                _configure_vae_for_colab(self.runner.vae)
                 with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
                     cond_latents = self.runner.vae_encode([cond_video.squeeze(0)])
                 cond_latents = [c.to("cpu", dtype=torch.bfloat16) for c in cond_latents]
@@ -399,10 +414,7 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
 
                 # Step 4: VAE Decode on GPU
                 self.runner.vae.to(device=get_device(), dtype=torch.bfloat16)
-                if hasattr(self.runner.vae, "disable_slicing"):
-                    self.runner.vae.disable_slicing()
-                if hasattr(self.runner.vae, "set_memory_limit"):
-                    self.runner.vae.set_memory_limit(conv_max_mem=0.15, norm_max_mem=0.15)
+                _configure_vae_for_colab(self.runner.vae)
                 latents_bf16 = [l.to(device=get_device(), dtype=torch.bfloat16) for l in latents_cpu]
                 with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
                     video_tensors = self.runner.vae_decode(latents_bf16)
