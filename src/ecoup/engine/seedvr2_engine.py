@@ -213,13 +213,40 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
             from common.distributed import get_device, init_torch
             from projects.video_diffusion_sr.infer import VideoDiffusionInfer
 
-            init_torch(cudnn_benchmark=False)
+            import torch.distributed as dist
+            if not (dist.is_available() and dist.is_initialized()):
+                init_torch(cudnn_benchmark=False)
 
             cfg_path = seedvr_dir / "configs_3b/main.yaml"
             if not cfg_path.exists():
                 cfg_path = Path("configs_3b/main.yaml")
 
             config = load_config(str(cfg_path))
+
+            # Auto-resolve VAE checkpoint path to avoid FileNotFoundError
+            vae_candidates = [
+                ckpt_file.parent / "ema_vae.pth",
+                Path("/content/upscale_video/ckpts/ema_vae.pth"),
+                Path("ckpts/ema_vae.pth"),
+                seedvr_dir / "ckpts/ema_vae.pth",
+                Path("models/seedvr2_3b/ema_vae.pth"),
+            ]
+            vae_file = next((vc.resolve() for vc in vae_candidates if vc.is_file()), None)
+            if vae_file is not None:
+                config.vae.checkpoint = str(vae_file)
+                print(f"[SeedVR2 Engine] Đã tìm thấy VAE checkpoint tại: {vae_file}")
+                try:
+                    s_ckpts = seedvr_dir / "ckpts"
+                    s_ckpts.mkdir(parents=True, exist_ok=True)
+                    s_link = s_ckpts / "ema_vae.pth"
+                    if not s_link.exists():
+                        try:
+                            s_link.symlink_to(vae_file)
+                        except Exception:
+                            import shutil
+                            shutil.copyfile(str(vae_file), str(s_link))
+                except Exception:
+                    pass
             # Ensure meta_non_persistent_buffer_init_fn safely materializes buffers to CPU without assertion failure
             def safe_meta_init(module):
                 with torch.no_grad():
@@ -278,8 +305,20 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
             runner.configure_diffusion()
 
             # Text embeddings
-            pos_emb_path = seedvr_dir / "pos_emb.pt"
-            neg_emb_path = seedvr_dir / "neg_emb.pt"
+            pos_candidates = [
+                ckpt_file.parent / "pos_emb.pt",
+                Path("/content/upscale_video/ckpts/pos_emb.pt"),
+                seedvr_dir / "pos_emb.pt",
+                Path("ckpts/pos_emb.pt"),
+            ]
+            neg_candidates = [
+                ckpt_file.parent / "neg_emb.pt",
+                Path("/content/upscale_video/ckpts/neg_emb.pt"),
+                seedvr_dir / "neg_emb.pt",
+                Path("ckpts/neg_emb.pt"),
+            ]
+            pos_emb_path = next((p.resolve() for p in pos_candidates if p.is_file()), seedvr_dir / "pos_emb.pt")
+            neg_emb_path = next((n.resolve() for n in neg_candidates if n.is_file()), seedvr_dir / "neg_emb.pt")
 
             if pos_emb_path.exists() and neg_emb_path.exists():
                 pos_emb = torch.load(str(pos_emb_path), map_location="cpu")

@@ -12,7 +12,7 @@ def download_seedvr2():
     print("Đang tải trọng số SeedVR2-3B từ Hugging Face...")
     print("=" * 60)
 
-    dest_dir = Path("models/seedvr2_3b")
+    dest_dir = Path("ckpts")
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -30,6 +30,19 @@ def download_seedvr2():
         ignore_patterns=["*.git*"],
         resume_download=True,
     )
+
+    # Also link or copy to seedvr_core/ckpts if seedvr_core exists
+    seedvr_ckpts = Path("seedvr_core/ckpts")
+    seedvr_ckpts.mkdir(parents=True, exist_ok=True)
+    for pth in dest_dir.glob("*.pth"):
+        target = seedvr_ckpts / pth.name
+        if not target.exists():
+            try:
+                target.symlink_to(pth.resolve())
+            except Exception:
+                import shutil
+                shutil.copyfile(str(pth), str(target))
+
     print("Hoàn tất tải trọng số SeedVR2-3B!")
 
 
