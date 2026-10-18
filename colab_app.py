@@ -223,7 +223,7 @@ def run_upscale(
             tile_size=tile_sz,
             tile_overlap=tile_ov,
             control_strength=control_strength,
-            clip_length=9 if "seedvr" in model_choice.lower() else 16,
+            clip_length=5 if "seedvr" in model_choice.lower() else 16,
             clip_overlap=1 if "seedvr" in model_choice.lower() else 2,
         ),
         thermal=ThermalConfig(enabled=False),

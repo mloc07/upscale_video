@@ -314,23 +314,72 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
         finally:
             os.chdir(prev_cwd)
 
+    def _upscale_long_clip(self, frames: List[np.ndarray]) -> List[np.ndarray]:
+        """Break long clip into 5-frame temporal chunks to prevent VRAM OOM on Tesla T4."""
+        total = len(frames)
+        sub_len = 5
+        sub_step = 4
+        result: List[np.ndarray] = []
+        prev_tail: Optional[np.ndarray] = None
+
+        i = 0
+        while i < total:
+            if prev_tail is not None and total - i <= 1:
+                break
+            chunk = frames[i : i + sub_len]
+            if len(chunk) < sub_len:
+                needed = sub_len - len(chunk)
+                chunk = list(chunk) + [chunk[-1]] * needed
+                chunk_upscaled = self.upscale_clip(chunk)
+                valid_len = min(len(chunk_upscaled), total - i)
+                chunk_upscaled = chunk_upscaled[:valid_len]
+            else:
+                chunk_upscaled = self.upscale_clip(chunk)
+
+            if prev_tail is not None and len(chunk_upscaled) > 0:
+                blended = cv2.addWeighted(prev_tail, 0.5, chunk_upscaled[0], 0.5, 0)
+                result.append(blended)
+                body = chunk_upscaled[1:sub_step]
+                result.extend(body)
+                if len(chunk_upscaled) > sub_step:
+                    prev_tail = chunk_upscaled[sub_step]
+                else:
+                    prev_tail = None
+            else:
+                body = chunk_upscaled[:sub_step]
+                result.extend(body)
+                if len(chunk_upscaled) > sub_step:
+                    prev_tail = chunk_upscaled[sub_step]
+                else:
+                    prev_tail = None
+
+            i += sub_step
+
+        if prev_tail is not None and len(result) < total:
+            result.append(prev_tail)
+
+        return result[:total]
+
     def upscale_clip(self, frames: List[np.ndarray]) -> List[np.ndarray]:
         """Upscale a temporal sequence of consecutive RGB frames [(H, W, 3) uint8]."""
         if not frames:
             return []
 
+        # On 16GB GPUs like Colab Tesla T4, keep temporal batch at 5 frames (k=1)
+        # to guarantee VRAM usage stays safely below 8 GB (50% capacity).
+        if len(frames) > 5:
+            return self._upscale_long_clip(frames)
+
         orig_h, orig_w = frames[0].shape[:2]
         target_w = orig_w * self.scale
         target_h = orig_h * self.scale
 
-        # Ensure temporal dimension satisfies T % 4 == 1 required by Causal VAE
+        # Ensure temporal dimension is exactly 5 frames (4*1 + 1)
         T_orig = len(frames)
-        if T_orig % 4 != 1:
-            k = (T_orig - 1) // 4 + 1
-            T_target = 4 * k + 1
-            padded_frames = list(frames) + [frames[-1]] * (T_target - T_orig)
+        if T_orig < 5:
+            padded_frames = list(frames) + [frames[-1]] * (5 - T_orig)
         else:
-            padded_frames = frames
+            padded_frames = frames[:5]
 
         # If real neural model is loaded and GPU is available
         if self.model == "SeedVR2_Loaded" and self.runner is not None:
