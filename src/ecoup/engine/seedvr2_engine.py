@@ -463,7 +463,12 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
                 # Step 2: DiT Sampling on GPU
                 self.runner.dit.to(device=get_device(), dtype=torch.bfloat16)
                 cond_latents_cuda = [c.to(get_device(), dtype=torch.bfloat16) for c in cond_latents]
-                noises = [torch.randn_like(latent).to(get_device()) for latent in cond_latents_cuda]
+                # Fixed seed: identical noise for every clip -> consistent hallucinated detail
+                # (lips/nose/eyes) across chunk boundaries instead of flickering "random sharpness".
+                noises = []
+                for latent in cond_latents_cuda:
+                    gen = torch.Generator(device=latent.device).manual_seed(42)
+                    noises.append(torch.randn(latent.shape, generator=gen, device=latent.device, dtype=latent.dtype))
                 conditions = [
                     self.runner.get_condition(noise, task="sr", latent_blur=latent_blur)
                     for noise, latent_blur in zip(noises, cond_latents_cuda)
