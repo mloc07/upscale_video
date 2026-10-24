@@ -544,6 +544,19 @@ def create_ui():
                     video_info_md = gr.Markdown("ℹ️ *Chưa chọn tệp video.*")
                     in_file.change(fn=inspect_video, inputs=[in_file], outputs=[video_info_md])
 
+                    sample_videos = [
+                        "/content/upscale_video/plan_for_project/tests_video/720_A.mp4",
+                        "/content/upscale_video/plan_for_project/tests_video/720_B.mp4",
+                        "/content/upscale_video/plan_for_project/tests_video/720_C.mp4",
+                    ]
+                    existing_samples = [[s] for s in sample_videos if Path(s).exists()]
+                    if existing_samples:
+                        gr.Examples(
+                            examples=existing_samples,
+                            inputs=[in_file],
+                            label="Video mẫu có sẵn trên máy chủ (Bấm để nạp nhanh)",
+                        )
+
                     with gr.Row():
                         model_dd = gr.Dropdown(
                             choices=get_available_models(),
