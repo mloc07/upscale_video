@@ -35,7 +35,7 @@ class MockClipEngine(VideoUpscaleEngine):
         out_frames = []
         for f in frames:
             h, w = f.shape[:2]
-            up = cv2.resize(f, (w * self.scale, h * self.scale), interpolation=cv2.INTER_LINEAR)
+            up = cv2.resize(f, (int(round(w * self.scale)), int(round(h * self.scale))), interpolation=cv2.INTER_LINEAR)
             out_frames.append(up)
         return out_frames
 

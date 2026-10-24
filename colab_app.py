@@ -64,8 +64,10 @@ from ecoup.pipeline import UpscalePipeline
 from ecoup.utils import get_gpu_vram_info
 from ecoup.video_io import get_video_metadata
 
-# Global tracker for cancel functionality
+# Global tracker for cancel functionality and engine cache
 active_pipeline: Optional[UpscalePipeline] = None
+_GLOBAL_ENGINE = None
+_GLOBAL_ENGINE_KEY: Optional[str] = None
 
 # Verified ONNX models mapping: model_key -> (filename, download_url, default_scale)
 MODEL_REGISTRY = {
@@ -232,7 +234,18 @@ def run_upscale(
 
     progress(0.01, desc="Đang chuẩn bị mô hình AI...")
 
-    # Model resolution
+    global _GLOBAL_ENGINE, _GLOBAL_ENGINE_KEY
+
+    # Clean unreferenced GPU memory before starting
+    import gc
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
     engine = None
     custom_fn = None
     model_name = "nomosuni"
@@ -242,51 +255,114 @@ def run_upscale(
     used_seed = None if random_seed_checked else int(seed_input)
 
     if "seedvr" in model_choice.lower():
-        from ecoup.engine.seedvr2_engine import SeedVR2UpscaleEngine
-        engine = SeedVR2UpscaleEngine(
-            scale=int(round(target_scale)) if target_scale >= 2 else 2,
-            precision="fp16",
-            seed=used_seed,
-            memory_mode=mem_mode,
-            sub_len=int(sub_len_choice),
-            model_resolution=model_res,
-        )
+        from ecoup.engine.seedvr2_engine import SeedVR2UpscaleEngine, _configure_vae_for_colab, _clear_vae_memory
         model_name = "SeedVR2-3B"
         model_scale = 2
-        engine.load(model_path="ckpts/seedvr2_ema_3b.pth", precision="fp16", provider="cuda")
         model_file_str = "ckpts/seedvr2_ema_3b.pth"
+
+        # Check if already loaded in memory
+        if _GLOBAL_ENGINE is not None and _GLOBAL_ENGINE_KEY == "seedvr2" and isinstance(_GLOBAL_ENGINE, SeedVR2UpscaleEngine):
+            engine = _GLOBAL_ENGINE
+            engine.scale = float(target_scale)
+            engine.seed = used_seed
+            engine.sub_len = int(sub_len_choice)
+            engine.model_resolution = model_res
+            if engine.memory_mode != mem_mode:
+                engine.memory_mode = mem_mode
+                engine.effective_memory_mode = mem_mode
+            if hasattr(engine, "runner") and engine.runner is not None and hasattr(engine.runner, "vae"):
+                _configure_vae_for_colab(engine.runner.vae)
+                _clear_vae_memory(engine.runner.vae)
+            print("[SeedVR2 App] Đã tái sử dụng mô hình SeedVR2 sẵn có trên bộ nhớ.")
+        else:
+            if _GLOBAL_ENGINE is not None:
+                del _GLOBAL_ENGINE
+                _GLOBAL_ENGINE = None
+                _GLOBAL_ENGINE_KEY = None
+                gc.collect()
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except Exception:
+                    pass
+
+            engine = SeedVR2UpscaleEngine(
+                scale=float(target_scale),
+                precision="fp16",
+                seed=used_seed,
+                memory_mode=mem_mode,
+                sub_len=int(sub_len_choice),
+                model_resolution=model_res,
+            )
+            engine.load(model_path="ckpts/seedvr2_ema_3b.pth", precision="fp16", provider="cuda")
+            _GLOBAL_ENGINE = engine
+            _GLOBAL_ENGINE_KEY = "seedvr2"
     elif "ccsr" in model_choice.lower():
+        if _GLOBAL_ENGINE is not None and _GLOBAL_ENGINE_KEY != "ccsr":
+            del _GLOBAL_ENGINE
+            _GLOBAL_ENGINE = None
+            _GLOBAL_ENGINE_KEY = None
+            gc.collect()
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
         from ecoup.engine.ccsr_engine import CcsrUpscaleEngine
         engine = CcsrUpscaleEngine(control_strength=control_strength)
         model_name = "CCSR_v2"
         model_scale = 2
         engine.load(model_path="preset/models", precision="fp16", provider="cuda")
         model_file_str = "preset/models/controlnet"
+        _GLOBAL_ENGINE = engine
+        _GLOBAL_ENGINE_KEY = "ccsr"
     elif "x2plus" in model_choice.lower():
+        if _GLOBAL_ENGINE is not None and _GLOBAL_ENGINE_KEY != "x2plus":
+            del _GLOBAL_ENGINE
+            _GLOBAL_ENGINE = None
+            _GLOBAL_ENGINE_KEY = None
         mf, model_scale = ensure_model_file("x2plus")
         model_name = "RealESRGAN_x2plus"
         model_file_str = str(mf)
         engine = OnnxUpscaleEngine()
         engine.load(mf, provider="auto")
     elif "anime" in model_choice.lower():
+        if _GLOBAL_ENGINE is not None and _GLOBAL_ENGINE_KEY != "anime":
+            del _GLOBAL_ENGINE
+            _GLOBAL_ENGINE = None
+            _GLOBAL_ENGINE_KEY = None
         mf, model_scale = ensure_model_file("anime")
         model_name = "realesr-animevideov3"
         model_file_str = str(mf)
         engine = OnnxUpscaleEngine()
         engine.load(mf, provider="auto")
     elif "span" in model_choice.lower():
+        if _GLOBAL_ENGINE is not None and _GLOBAL_ENGINE_KEY != "span":
+            del _GLOBAL_ENGINE
+            _GLOBAL_ENGINE = None
+            _GLOBAL_ENGINE_KEY = None
         mf, model_scale = ensure_model_file("span")
         model_name = "SPAN_2x"
         model_file_str = str(mf)
         engine = OnnxUpscaleEngine()
         engine.load(mf, provider="auto")
     elif "general" in model_choice.lower():
+        if _GLOBAL_ENGINE is not None and _GLOBAL_ENGINE_KEY != "general":
+            del _GLOBAL_ENGINE
+            _GLOBAL_ENGINE = None
+            _GLOBAL_ENGINE_KEY = None
         mf, model_scale = ensure_model_file("general")
         model_name = "realesr-general-x4v3"
         model_file_str = str(mf)
         engine = OnnxUpscaleEngine()
         engine.load(mf, provider="auto")
     else:
+        if _GLOBAL_ENGINE is not None and _GLOBAL_ENGINE_KEY != "nomosuni":
+            del _GLOBAL_ENGINE
+            _GLOBAL_ENGINE = None
+            _GLOBAL_ENGINE_KEY = None
         mf, model_scale = ensure_model_file("nomosuni")
         model_name = "NomosUni_2x"
         model_file_str = str(mf)
@@ -394,11 +470,35 @@ def run_upscale(
         progress(0.02, desc="Đang phân tích video...")
         pipeline.run(run_input_path, out_path, resume=(resume_checked and not preview_mode))
     except Exception as e:
+        if "out of memory" in str(e).lower() or "cuda" in str(e).lower():
+            print(f"[Colab App] Phát hiện OOM: {e}. Đang giải phóng bộ nhớ...")
+            _GLOBAL_ENGINE = None
+            _GLOBAL_ENGINE_KEY = None
+            import gc
+            gc.collect()
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
         if pipeline._cancelled:
             return None, "⏹️ Quá trình xử lý đã được hủy thành công."
         raise e
     finally:
         active_pipeline = None
+        if _GLOBAL_ENGINE is not None and hasattr(_GLOBAL_ENGINE, "runner") and _GLOBAL_ENGINE.runner is not None:
+            if hasattr(_GLOBAL_ENGINE.runner, "vae"):
+                from ecoup.engine.seedvr2_engine import _clear_vae_memory
+                _clear_vae_memory(_GLOBAL_ENGINE.runner.vae)
+        import gc
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
 
     if pipeline._cancelled:
         return None, "⏹️ Quá trình xử lý đã được hủy thành công."

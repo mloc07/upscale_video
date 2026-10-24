@@ -121,7 +121,7 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
         self,
         model_path: Optional[str | Path] = None,
         device: str = "cuda",
-        scale: int = 2,
+        scale: float = 2.0,
         precision: str = "fp16",
         seed: Optional[int] = 42,
         memory_mode: str = "auto",
@@ -567,8 +567,8 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
             self._step_timer.reset()
 
         orig_h, orig_w = frames[0].shape[:2]
-        target_w = orig_w * self.scale
-        target_h = orig_h * self.scale
+        target_w = int(round(orig_w * self.scale))
+        target_h = int(round(orig_h * self.scale))
 
         # Ensure temporal dimension is exactly curr_sub_len frames (4k + 1)
         T_orig = len(frames)
@@ -618,7 +618,7 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
                 with self._step_timer.timed("vae_encode_to_gpu"):
                     if not is_resident:
                         self.runner.vae.to(device=get_device(), dtype=dtype)
-                        _configure_vae_for_colab(self.runner.vae)
+                    _configure_vae_for_colab(self.runner.vae)
 
                 with self._step_timer.timed("vae_encode"):
                     with torch.no_grad(), torch.autocast("cuda", dtype=dtype):
@@ -697,8 +697,10 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
                 with self._step_timer.timed("vae_decode_to_gpu"):
                     if not is_resident:
                         self.runner.vae.to(device=get_device(), dtype=dtype)
-                        _configure_vae_for_colab(self.runner.vae)
                         latents_device = [l.to(device=get_device(), dtype=dtype) for l in latents_cpu]
+                    else:
+                        latents_device = latents
+                    _configure_vae_for_colab(self.runner.vae)
 
                 with self._step_timer.timed("vae_decode"):
                     with torch.no_grad(), torch.autocast("cuda", dtype=dtype):
@@ -715,6 +717,7 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
 
                 with self._step_timer.timed("post_resize"):
                     out = video_tensors[0].to("cpu")
+                    del video_tensors
                     if out.ndim == 4:
                         out = out.permute(1, 2, 3, 0)
                     out_np = out.clip(-1, 1).mul_(0.5).add_(0.5).mul_(255).round().to(torch.uint8).numpy()
@@ -735,6 +738,7 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
                 return result_frames
 
             except Exception as e:
+                _clear_gpu()
                 print(f"[SeedVR2 Engine] Lỗi khi xử lý clip DiT: {e}. Tự động dùng Lanczos dự phòng.")
                 import traceback
                 traceback.print_exc()

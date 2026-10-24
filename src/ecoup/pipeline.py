@@ -70,6 +70,8 @@ class UpscalePipeline:
 
     def _postprocess_frame(self, out_frame: np.ndarray, orig_frame: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
         """Post-processing: Color Fix, Recover Original Detail, Sharpening, and Film Grain."""
+        if out_frame.shape[1] != out_w or out_frame.shape[0] != out_h:
+            out_frame = cv2.resize(out_frame, (out_w, out_h), interpolation=cv2.INTER_LANCZOS4)
         if hasattr(self.config, "post_process"):
             pp = self.config.post_process
             if getattr(pp, "color_fix", False):
@@ -122,7 +124,7 @@ class UpscalePipeline:
         elif self.engine is not None and hasattr(self.engine, "upscale_clip"):
             upscale_tile = None
             if hasattr(self.engine, "scale"):
-                self.engine.scale = int(round(target_scale))
+                self.engine.scale = int(target_scale) if float(target_scale).is_integer() else float(target_scale)
             if hasattr(self.engine, "seed") and hasattr(self.config.inference, "seed"):
                 self.engine.seed = self.config.inference.seed
             if hasattr(self.engine, "sub_len") and hasattr(self.config.inference, "sub_len"):
