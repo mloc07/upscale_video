@@ -1,16 +1,19 @@
 """Gradio Web Application for Eco Video Upscaler (Optimized for Google Colab and remote devices).
 
 Giao diện phục chế và nâng cấp độ phân giải video AI:
-- Thiết kế tối giản, tập trung vào công việc
-- Hỗ trợ mô hình khuếch tán CCSR v2 và các mô hình ONNX gia tốc GPU
-- Hỗ trợ hủy tiến trình tức thì
-- Giám sát trạng thái và tài nguyên thời gian thực
+- Thiết kế tối giản, tập trung vào công việc, bố cục 2 cột chuyên nghiệp
+- Hỗ trợ mô hình SeedVR2-3B DiT, CCSR v2 và các mô hình ONNX
+- Hỗ trợ xem trước nhanh 30 khung (Quick Preview) có kèm âm thanh
+- Hỗ trợ so sánh trực quan Bộ lọc tiền xử lý (Before / After Image Preview)
+- Hỗ trợ hủy tiến trình tức thì và tự động Checkpoint / Resume
+- Giám sát trạng thái và tài nguyên VRAM thời gian thực
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 import time
 import urllib.request
@@ -21,11 +24,12 @@ import cv2
 import gradio as gr
 import numpy as np
 
-# Prevent CUDA memory fragmentation on Colab Tesla T4
+# Prevent CUDA memory fragmentation on Colab Tesla T4 / L4
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 # Ensure src is on sys.path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent / "seedvr_core"))
 
 # Avoid UnicodeEncodeError on Windows consoles (cp1252)
 for _stream in (sys.stdout, sys.stderr):
@@ -113,26 +117,42 @@ def cancel_upscale():
     global active_pipeline
     if active_pipeline is not None:
         active_pipeline.cancel()
-        return "Đã gửi lệnh hủy. Đang dừng an toàn và giải phóng GPU..."
+        return "⏹️ Đã gửi lệnh hủy. Đang dừng an toàn và giải phóng GPU..."
     return "Không có tiến trình nào đang chạy."
 
 
 def inspect_video(file_path: Optional[str]) -> str:
     """Extract metadata using ffprobe and format for UI display."""
     if not file_path or not os.path.exists(file_path):
-        return "Chưa chọn tệp video."
+        return "ℹ️ *Chưa chọn tệp video.*"
     try:
         m = get_video_metadata(file_path)
         warn = ""
         if m.width < 720 or m.height < 720:
-            warn = " ⚠️ *Nguồn độ phân giải thấp, khuyên dùng mô hình SeedVR2 hoặc RealESRGAN.*"
+            warn = "<br>⚠️ *Nguồn độ phân giải thấp, khuyên dùng SeedVR2 để phục chế chi tiết.*"
+        audio_info = f"Có ({m.audio_codec})" if m.has_audio else "Không có audio"
         return (
-            f"**Thông tin nguồn:** `{m.width}×{m.height}` • **FPS:** `{m.fps:.2f}` • "
-            f"**Tổng khung:** `{m.total_frames}` • **Thời lượng:** `{m.duration_sec:.1f}s` • "
-            f"**Âm thanh:** `{'Có' if m.has_audio else 'Không'}`{warn}"
+            f"📹 **Độ phân giải:** `{m.width}×{m.height}` • **FPS:** `{m.fps:.2f}` ({m.fps_fraction})<br>"
+            f"⏱️ **Thời lượng:** `{m.duration_seconds:.2f}s` (`{m.total_frames}` khung hình)<br>"
+            f"🔊 **Âm thanh:** `{audio_info}` • **Codec Video:** `{m.video_codec}`{warn}"
         )
     except Exception as e:
         return f"Lỗi đọc thông tin: {e}"
+
+
+def get_hardware_status() -> str:
+    """Detect GPU hardware and return formatted status badge."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            gpu_name = torch.cuda.get_device_name(0)
+            free_bytes, total_bytes = torch.cuda.mem_get_info()
+            total_gb = total_bytes / (1024 ** 3)
+            free_gb = free_bytes / (1024 ** 3)
+            return f"🟢 **GPU:** {gpu_name} • **VRAM:** `{free_gb:.1f}GB trống / {total_gb:.1f}GB tổng`"
+    except Exception:
+        pass
+    return "🟡 **GPU:** CPU Mode / CUDA chưa sẵn sàng."
 
 
 def run_upscale(
@@ -346,207 +366,224 @@ def run_upscale(
     run_input_path = in_path
     if preview_mode:
         preview_in = output_dir / f"{in_path.stem}_preview_raw.mp4"
-        cap = cv2.VideoCapture(str(in_path))
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(str(preview_in), fourcc, fps, (w, h))
-        count = 0
-        while count < 30:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            writer.write(frame)
-            count += 1
-        cap.release()
-        writer.release()
-        run_input_path = preview_in
+        cmd = [
+            "ffmpeg", "-y", "-v", "error",
+            "-i", str(in_path),
+            "-vframes", "30",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            str(preview_in)
+        ]
+        try:
+            subprocess.run(cmd, check=True)
+            run_input_path = preview_in
+        except Exception:
+            run_input_path = in_path
 
     try:
         progress(0.02, desc="Đang phân tích video...")
         pipeline.run(run_input_path, out_path, resume=(resume_checked and not preview_mode))
     except Exception as e:
         if pipeline._cancelled:
-            return None, "Quá trình xử lý đã được hủy thành công."
+            return None, "⏹️ Quá trình xử lý đã được hủy thành công."
         raise e
     finally:
         active_pipeline = None
 
     if pipeline._cancelled:
-        return None, "Quá trình xử lý đã được hủy thành công."
+        return None, "⏹️ Quá trình xử lý đã được hủy thành công."
 
     progress(1.0, desc="Hoàn tất xử lý.")
     tag = "Xem thử (30 khung)" if preview_mode else "Toàn bộ"
-    return str(out_path), f"Hoàn tất ({tag}). Video đã lưu: {out_path.name}"
+    return str(out_path), f"🎉 Hoàn tất ({tag})! Video đã lưu: {out_path.name}"
 
 
 def create_ui():
     """Create clean, modern Gradio interface."""
     custom_css = """
-    .gradio-container { max-width: 900px !important; margin: 0 auto !important; }
-    #header { text-align: center; margin-bottom: 16px; }
-    #header h1 { font-size: 1.8rem; font-weight: 700; margin-bottom: 4px; }
+    .gradio-container { max-width: 1200px !important; margin: 0 auto !important; }
+    #header { text-align: center; margin-bottom: 12px; }
+    #header h1 { font-size: 2.0rem; font-weight: 800; margin-bottom: 4px; background: linear-gradient(90deg, #2563eb, #7c3aed); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
     #header p { color: #64748b; font-size: 0.95rem; margin: 0; }
-    .gr-button-primary { background: #2563eb !important; }
-    .gr-button-stop { background: #dc2626 !important; color: white !important; }
+    .gr-button-primary { background: linear-gradient(90deg, #2563eb, #1d4ed8) !important; color: white !important; font-weight: 600 !important; }
+    .gr-button-secondary { background: #0284c7 !important; color: white !important; font-weight: 600 !important; }
+    .gr-button-stop { background: #dc2626 !important; color: white !important; font-weight: 600 !important; }
     """
 
     with gr.Blocks(title="Eco Video Upscaler") as demo:
+        gr.HTML(f"<style>{custom_css}</style>")
         with gr.Column(elem_id="header"):
             gr.Markdown(
                 """
                 # ⚡ Eco Video Upscaler
-                Hệ thống phục chế và nâng cấp độ phân giải video AI
+                Hệ thống phục chế và nâng cấp độ phân giải video AI (ByteDance SeedVR2-3B DiT, CCSR v2 & ONNX)
                 """
             )
+            hw_badge = gr.Markdown(get_hardware_status())
 
-        with gr.Group():
-            gr.Markdown("#### 1. Tệp nguồn")
-            in_file = gr.File(
-                label="Tải lên Video",
-                file_types=[".mp4", ".mov", ".mkv", ".avi", ".webm"],
-                type="filepath",
-            )
-            video_info_md = gr.Markdown("Chưa chọn tệp video.")
-            in_file.change(fn=inspect_video, inputs=[in_file], outputs=[video_info_md])
-
-        with gr.Group():
-            gr.Markdown("#### 2. Cấu hình xử lý")
-            with gr.Row():
-                model_dd = gr.Dropdown(
-                    choices=get_available_models(),
-                    value="SeedVR2-3B (ByteDance DiT Video)",
-                    label="Mô hình AI",
-                )
-                scale_dd = gr.Dropdown(
-                    choices=[
-                        "1.5x (1080p Dọc - 1080×1920)",
-                        "2x (1440p Dọc - 1440×2560)",
-                        "4x",
-                    ],
-                    value="2x (1440p Dọc - 1440×2560)",
-                    label="Tỉ lệ phóng đại",
-                )
-                tile_dd = gr.Dropdown(
-                    choices=[
-                        "Toàn khung (Full-Frame)",
-                        "Tile 512x512",
-                        "Tile 256x256",
-                    ],
-                    value="Toàn khung (Full-Frame)",
-                    label="Phân mảnh (Tile)",
-                )
-
-            with gr.Row():
-                denoise_method_dd = gr.Dropdown(
-                    choices=[
-                        "bilateral (Lọc cạnh biên)",
-                        "nlmeans (Lọc chi tiết)",
-                        "none (Không lọc)",
-                    ],
-                    value="bilateral (Lọc cạnh biên)",
-                    label="Phương pháp khử nhiễu",
-                )
-                denoise_sl = gr.Slider(
-                    minimum=0,
-                    maximum=100,
-                    value=10,
-                    step=5,
-                    label="Khử nhiễu (Denoise %)",
-                )
-                recover_sl = gr.Slider(
-                    minimum=0,
-                    maximum=50,
-                    value=10,
-                    step=5,
-                    label="Khôi phục gốc (Recover %)",
-                )
-
-            with gr.Row():
-                ctrl_strength_sl = gr.Slider(
-                    minimum=0.1,
-                    maximum=1.5,
-                    value=0.75,
-                    step=0.05,
-                    label="Độ ép cấu trúc (Control Strength)",
-                )
-                sharpen_sl = gr.Slider(
-                    minimum=0,
-                    maximum=100,
-                    value=15,
-                    step=5,
-                    label="Làm nét (Sharpen %)",
-                )
-                grain_cb = gr.Checkbox(
-                    value=False,
-                    label="Bù hạt phim (Film Grain)",
-                )
-
-            with gr.Accordion("⚙️ Cấu hình Nâng cao (Tối ưu GPU & SeedVR2)", open=True):
-                with gr.Row():
-                    memory_mode_dd = gr.Dropdown(
-                        choices=[
-                            "auto (Tự chọn theo VRAM)",
-                            "resident (Nhanh nhất - Giữ GPU)",
-                            "offload (Bảo vệ VRAM 16GB)",
-                        ],
-                        value="auto (Tự chọn theo VRAM)",
-                        label="Chế độ bộ nhớ (Memory Mode)",
+        with gr.Row():
+            # ================= LEFT COLUMN: INPUTS & SETTINGS =================
+            with gr.Column(scale=6):
+                with gr.Group():
+                    gr.Markdown("### 1. Tệp nguồn & Cấu hình cơ bản")
+                    in_file = gr.File(
+                        label="Tải lên Video nguồn",
+                        file_types=[".mp4", ".mov", ".mkv", ".avi", ".webm"],
+                        type="filepath",
                     )
-                    sub_len_dd = gr.Dropdown(
-                        choices=[5, 9, 13],
-                        value=5,
-                        label="Cửa sổ thời gian DiT (Temporal Window)",
-                    )
-                    model_res_dd = gr.Dropdown(
-                        choices=[
-                            "native (Gốc 720p - Ổn định)",
-                            "match_target (Khớp độ phân giải phóng đại)",
-                        ],
-                        value="native (Gốc 720p - Ổn định)",
-                        label="Độ phân giải nội bộ DiT",
+                    video_info_md = gr.Markdown("ℹ️ *Chưa chọn tệp video.*")
+                    in_file.change(fn=inspect_video, inputs=[in_file], outputs=[video_info_md])
+
+                    with gr.Row():
+                        model_dd = gr.Dropdown(
+                            choices=get_available_models(),
+                            value="SeedVR2-3B (ByteDance DiT Video)",
+                            label="Mô hình AI",
+                            scale=3,
+                        )
+                        scale_dd = gr.Dropdown(
+                            choices=[
+                                "1.5x (1080p Dọc - 1080×1920)",
+                                "2x (1440p Dọc - 1440×2560)",
+                                "4x",
+                            ],
+                            value="2x (1440p Dọc - 1440×2560)",
+                            label="Tỉ lệ phóng đại",
+                            scale=2,
+                        )
+                        tile_dd = gr.Dropdown(
+                            choices=[
+                                "Toàn khung (Full-Frame)",
+                                "Tile 512x512",
+                                "Tile 256x256",
+                            ],
+                            value="Toàn khung (Full-Frame)",
+                            label="Phân mảnh (Tile)",
+                            scale=2,
+                        )
+
+                with gr.Accordion("🎨 2. Bộ lọc tiền xử lý & Màu sắc (Enhancements)", open=False):
+                    with gr.Row():
+                        denoise_method_dd = gr.Dropdown(
+                            choices=[
+                                "bilateral (Lọc cạnh biên - Khuyên dùng)",
+                                "nlmeans (Lọc chi tiết)",
+                                "none (Không lọc)",
+                            ],
+                            value="bilateral (Lọc cạnh biên - Khuyên dùng)",
+                            label="Phương pháp khử nhiễu",
+                        )
+                        denoise_sl = gr.Slider(
+                            minimum=0,
+                            maximum=100,
+                            value=10,
+                            step=5,
+                            label="Khử nhiễu (Denoise %)",
+                        )
+                        recover_sl = gr.Slider(
+                            minimum=0,
+                            maximum=50,
+                            value=10,
+                            step=5,
+                            label="Khôi phục gốc (Recover %)",
+                        )
+
+                    with gr.Row():
+                        ctrl_strength_sl = gr.Slider(
+                            minimum=0.1,
+                            maximum=1.5,
+                            value=0.75,
+                            step=0.05,
+                            label="Độ ép cấu trúc (ControlNet)",
+                        )
+                        sharpen_sl = gr.Slider(
+                            minimum=0,
+                            maximum=100,
+                            value=15,
+                            step=5,
+                            label="Làm nét (Sharpen %)",
+                        )
+                        grain_cb = gr.Checkbox(
+                            value=False,
+                            label="Bù hạt phim (Film Grain)",
+                        )
+
+                with gr.Accordion("⚙️ 3. Cấu hình Nâng cao GPU & SeedVR2", open=False):
+                    with gr.Row():
+                        memory_mode_dd = gr.Dropdown(
+                            choices=[
+                                "auto (Tự chọn theo VRAM - Khuyên dùng)",
+                                "resident (Nhanh nhất 2.4x - Giữ GPU)",
+                                "offload (Bảo vệ VRAM 16GB)",
+                            ],
+                            value="auto (Tự chọn theo VRAM - Khuyên dùng)",
+                            label="Chế độ bộ nhớ (Memory Mode)",
+                        )
+                        sub_len_dd = gr.Dropdown(
+                            choices=[5, 9, 13],
+                            value=5,
+                            label="Cửa sổ thời gian DiT (Temporal Window)",
+                        )
+                        model_res_dd = gr.Dropdown(
+                            choices=[
+                                "native (Gốc 720p - Ổn định cao)",
+                                "match_target (Khớp độ phân giải phóng đại - Cần GPU >40GB)",
+                            ],
+                            value="native (Gốc 720p - Ổn định cao)",
+                            label="Độ phân giải nội bộ DiT",
+                        )
+
+                    with gr.Row():
+                        seed_num = gr.Number(
+                            value=42,
+                            label="Seed cố định (Khử nhấp nháy chi tiết)",
+                            precision=0,
+                        )
+                        random_seed_cb = gr.Checkbox(
+                            value=False,
+                            label="Dùng Seed ngẫu nhiên (None)",
+                        )
+                        checkpoint_cb = gr.Checkbox(
+                            value=True,
+                            label="Bật Checkpoint lưu phân đoạn",
+                        )
+                        resume_cb = gr.Checkbox(
+                            value=False,
+                            label="Tiếp tục job dở (Resume)",
+                        )
+
+            # ================= RIGHT COLUMN: CONTROLS & OUTPUT =================
+            with gr.Column(scale=6):
+                with gr.Group():
+                    gr.Markdown("### 4. Điều khiển thực thi")
+                    with gr.Row():
+                        btn_preview = gr.Button("⚡ Xem thử nhanh (30 khung)", variant="secondary", size="lg", scale=2)
+                        btn_run = gr.Button("🚀 Bắt đầu xử lý toàn bộ", variant="primary", size="lg", scale=3)
+                        btn_cancel = gr.Button("⏹️ Hủy", variant="stop", size="lg", scale=1)
+
+                    status_output = gr.Textbox(
+                        label="Trạng thái xử lý",
+                        value="Sẵn sàng",
+                        interactive=False,
+                        lines=1,
                     )
 
-                with gr.Row():
-                    seed_num = gr.Number(
-                        value=42,
-                        label="Seed cố định (Khử nhấp nháy chi tiết)",
-                        precision=0,
-                    )
-                    random_seed_cb = gr.Checkbox(
-                        value=False,
-                        label="Dùng Seed ngẫu nhiên (None)",
-                    )
-                    checkpoint_cb = gr.Checkbox(
-                        value=True,
-                        label="Bật Checkpoint lưu phân đoạn",
-                    )
-                    resume_cb = gr.Checkbox(
-                        value=False,
-                        label="Tiếp tục job dở (Resume)",
+                with gr.Group():
+                    gr.Markdown("### 5. Kết quả Video thành phẩm")
+                    out_file = gr.File(
+                        label="Video thành phẩm (Tải về)",
+                        interactive=False,
                     )
 
-        with gr.Group():
-            gr.Markdown("#### 3. Điều khiển")
-            with gr.Row():
-                btn_preview = gr.Button("⚡ Xem thử nhanh (30 khung)", variant="secondary", size="lg", scale=2)
-                btn_run = gr.Button("🚀 Bắt đầu xử lý toàn bộ", variant="primary", size="lg", scale=3)
-                btn_cancel = gr.Button("⏹️ Hủy bỏ", variant="stop", size="lg", scale=1)
-
-            status_output = gr.Textbox(
-                label="Trạng thái",
-                value="Sẵn sàng",
-                interactive=False,
-                lines=1,
-            )
-
-        with gr.Group():
-            gr.Markdown("#### 4. Kết quả")
-            out_file = gr.File(
-                label="Video thành phẩm",
-                interactive=False,
-            )
+                with gr.Accordion("💡 Hướng dẫn & Lưu ý phần cứng", open=False):
+                    gr.Markdown(
+                        """
+                        - **Tesla T4 (15GB VRAM)**: Khuyên dùng `memory_mode: offload`, `sub_len: 5`, `model_resolution: native`.
+                        - **NVIDIA L4 (24GB VRAM)**: Khuyên dùng `memory_mode: resident` (tăng tốc gấp **2.4 lần**, đạt ~0.35 - 0.50 FPS).
+                        - **NVIDIA A100 (40GB/80GB)**: Có thể tăng `sub_len: 9` hoặc `13` để tăng tính liên tục thời gian.
+                        - **Bảo toàn số khung hình**: Hệ thống bảo toàn 100% số lượng khung hình gốc và tự động remux âm thanh AAC đồng bộ.
+                        """
+                    )
 
         common_inputs = [
             in_file,
@@ -599,14 +636,17 @@ def main():
     parser = argparse.ArgumentParser(description="Eco Video Upscaler - Gradio Cloud WebUI")
     parser.add_argument("--share", action="store_true", help="Generate public gradio.live link")
     parser.add_argument("--port", type=int, default=7860, help="Local server port")
-    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host interface")
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="Binding host")
     args = parser.parse_args()
 
     demo = create_ui()
-    print("\n=======================================================")
-    print("🚀 Khởi động Eco Video Upscaler WebUI...")
-    print("=======================================================\n")
-    demo.launch(server_name=args.host, server_port=args.port, share=args.share)
+    demo.queue()
+    demo.launch(
+        server_name=args.host,
+        server_port=args.port,
+        share=args.share,
+        show_error=True,
+    )
 
 
 if __name__ == "__main__":
