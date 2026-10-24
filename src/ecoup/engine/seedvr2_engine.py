@@ -70,6 +70,50 @@ def _configure_vae_for_colab(vae):
             m.memory = None
 
 
+class StepTimer:
+    """Accurate timing profiler for each stage in the super-resolution pipeline."""
+
+    def __init__(self, enabled: bool = False):
+        self.enabled = enabled
+        self.timings: dict[str, float] = {}
+        self.peak_vram_mb: float = 0.0
+
+    def reset(self):
+        self.timings.clear()
+        self.peak_vram_mb = 0.0
+
+    def timed(self, step_name: str):
+        class _TimedContext:
+            def __init__(self, timer: StepTimer, name: str):
+                self.timer = timer
+                self.name = name
+                self.t0 = 0.0
+
+            def __enter__(self):
+                if self.timer.enabled:
+                    try:
+                        import torch
+                        if torch.cuda.is_available():
+                            torch.cuda.synchronize()
+                    except Exception:
+                        pass
+                    self.t0 = time.perf_counter()
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                if self.timer.enabled:
+                    try:
+                        import torch
+                        if torch.cuda.is_available():
+                            torch.cuda.synchronize()
+                    except Exception:
+                        pass
+                    dur = time.perf_counter() - self.t0
+                    self.timer.timings[self.name] = self.timer.timings.get(self.name, 0.0) + dur
+
+        return _TimedContext(self, step_name)
+
+
 class SeedVR2UpscaleEngine(VideoUpscaleEngine):
     """SeedVR2 AI Inference Engine for Temporal Video Super-Resolution."""
 
@@ -78,15 +122,32 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
         model_path: Optional[str | Path] = None,
         device: str = "cuda",
         scale: int = 2,
+        precision: str = "fp16",
+        seed: Optional[int] = 42,
+        memory_mode: str = "auto",
+        sub_len: int = 5,
+        model_resolution: str = "native",
+        enable_profiling: bool = False,
     ):
         self.device = device
         self.scale = scale
+        self.precision = precision
+        self.seed = seed
+        self.memory_mode = memory_mode
+        self.sub_len = sub_len
+        self.model_resolution = model_resolution
+        self.effective_memory_mode = "offload"
+        self.enable_profiling = enable_profiling
+        self.last_profile_stats: dict = {}
+        self.torch_dtype = None
+        self._step_timer = StepTimer(enabled=enable_profiling)
+        self._in_long_clip = False
         self.model = None
         self.runner = None
         self.text_embeds = None
         self.active_provider = "Uninitialized"
         if model_path is not None:
-            self.load(model_path, provider=device)
+            self.load(model_path, precision=precision, provider=device)
 
     def _locate_seedvr_core(self) -> Optional[Path]:
         """Locate seedvr_core directory and add to sys.path."""
@@ -141,6 +202,19 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
 
         return None
 
+    def _record_profile(self):
+        try:
+            import torch
+            if torch.cuda.is_available():
+                peak_mb = torch.cuda.max_memory_allocated() / (1024 * 1024)
+                self._step_timer.peak_vram_mb = max(self._step_timer.peak_vram_mb, peak_mb)
+        except Exception:
+            pass
+        self.last_profile_stats = {
+            "timings": dict(self._step_timer.timings),
+            "peak_vram_mb": self._step_timer.peak_vram_mb,
+        }
+
     def load(
         self,
         model_path: str | Path = "ckpts/seedvr2_ema_3b.pth",
@@ -148,8 +222,10 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
         provider: str = "cuda",
     ) -> None:
         """Load SeedVR2 model weights and initialize pipeline."""
+        self.precision = precision
         try:
             import torch
+            self.torch_dtype = torch.float16 if self.precision == "fp16" else torch.bfloat16
         except ImportError:
             self.active_provider = "CPU Fallback (Lanczos)"
             print("[SeedVR2 Engine] Cảnh báo: PyTorch chưa được cài đặt. Chạy ở chế độ fallback.")
@@ -160,7 +236,22 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
             self.active_provider = "PyTorch CPU"
         else:
             self.device = "cuda"
-            self.active_provider = "PyTorch CUDA (SeedVR2 DiT)"
+            self.active_provider = f"PyTorch CUDA (SeedVR2 DiT {self.precision})"
+
+        if self.device == "cuda" and torch.cuda.is_available():
+            if self.memory_mode == "resident":
+                self.effective_memory_mode = "resident"
+            elif self.memory_mode == "offload":
+                self.effective_memory_mode = "offload"
+            else:  # "auto"
+                free_bytes, total_bytes = torch.cuda.mem_get_info()
+                free_gb = free_bytes / (1024 ** 3)
+                if free_gb >= 14.0:
+                    self.effective_memory_mode = "resident"
+                    print(f"[SeedVR2 Engine] VRAM khả dụng {free_gb:.1f} GB >= 14.0 GB: Tự động kích hoạt memory_mode='resident' (giữ model trên GPU, triệt tiêu offload PCIe).")
+                else:
+                    self.effective_memory_mode = "offload"
+                    print(f"[SeedVR2 Engine] VRAM khả dụng {free_gb:.1f} GB < 14.0 GB: Tự động dùng memory_mode='offload' (offload CPU luân phiên bảo vệ VRAM).")
 
         seedvr_dir = self._locate_seedvr_core()
         if seedvr_dir is None:
@@ -293,7 +384,7 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
 
             print("[SeedVR2 Engine] Nạp VAE checkpoint vào CPU...")
             runner.configure_vae_model()
-            runner.vae.to(dtype=torch.bfloat16)
+            runner.vae.to(dtype=self.torch_dtype or torch.bfloat16)
             _configure_vae_for_colab(runner.vae)
             runner.vae.to("cpu")
             _clear_gpu()
@@ -343,6 +434,14 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
 
             self.runner = runner
             self.model = "SeedVR2_Loaded"
+
+            if self.effective_memory_mode == "resident":
+                print("[SeedVR2 Engine] Chế độ resident: Đang nạp sẵn DiT và VAE lên GPU...")
+                runner.vae.to(device=get_device(), dtype=self.torch_dtype or torch.float16)
+                _configure_vae_for_colab(runner.vae)
+                runner.dit.to(device=get_device(), dtype=self.torch_dtype or torch.float16)
+                _clear_gpu()
+
             print("[SeedVR2 Engine] Khởi tạo hoàn tất! Mô hình sẵn sàng phục chế video.")
 
         except Exception as e:
@@ -354,10 +453,10 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
             os.chdir(prev_cwd)
 
     def _upscale_long_clip(self, frames: List[np.ndarray]) -> List[np.ndarray]:
-        """Break long clip into 5-frame temporal chunks to prevent VRAM OOM on Tesla T4."""
+        """Break long clip into temporal chunks to prevent VRAM OOM."""
         total = len(frames)
-        sub_len = 5
-        sub_step = 4
+        sub_len = max(5, getattr(self, "sub_len", 5))
+        sub_step = sub_len - 1
         result: List[np.ndarray] = []
         prev_tail: Optional[np.ndarray] = None
 
@@ -369,11 +468,38 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
             if len(chunk) < sub_len:
                 needed = sub_len - len(chunk)
                 chunk = list(chunk) + [chunk[-1]] * needed
-                chunk_upscaled = self.upscale_clip(chunk)
+                try:
+                    chunk_upscaled = self.upscale_clip(chunk)
+                except Exception as e:
+                    # Dynamic OOM backoff to sub_len=5
+                    if ("out of memory" in str(e).lower() or "cuda" in str(e).lower()) and sub_len > 5:
+                        print(f"[SeedVR2 Engine] Cảnh báo OOM với sub_len={sub_len}. Tự động hạ xuống sub_len=5...")
+                        _clear_gpu()
+                        self.sub_len = 5
+                        sub_len = 5
+                        sub_step = 4
+                        chunk = frames[i : i + sub_len]
+                        if len(chunk) < sub_len:
+                            chunk = list(chunk) + [chunk[-1]] * (sub_len - len(chunk))
+                        chunk_upscaled = self.upscale_clip(chunk)
+                    else:
+                        raise
                 valid_len = min(len(chunk_upscaled), total - i)
                 chunk_upscaled = chunk_upscaled[:valid_len]
             else:
-                chunk_upscaled = self.upscale_clip(chunk)
+                try:
+                    chunk_upscaled = self.upscale_clip(chunk)
+                except Exception as e:
+                    if ("out of memory" in str(e).lower() or "cuda" in str(e).lower()) and sub_len > 5:
+                        print(f"[SeedVR2 Engine] Cảnh báo OOM với sub_len={sub_len}. Tự động hạ xuống sub_len=5...")
+                        _clear_gpu()
+                        self.sub_len = 5
+                        sub_len = 5
+                        sub_step = 4
+                        chunk = frames[i : i + sub_len]
+                        chunk_upscaled = self.upscale_clip(chunk)
+                    else:
+                        raise
 
             if prev_tail is not None and len(chunk_upscaled) > 0:
                 blended = cv2.addWeighted(prev_tail, 0.5, chunk_upscaled[0], 0.5, 0)
@@ -404,21 +530,34 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
         if not frames:
             return []
 
-        # On 16GB GPUs like Colab Tesla T4, keep temporal batch at 5 frames (k=1)
-        # to guarantee VRAM usage stays safely below 8 GB (50% capacity).
-        if len(frames) > 5:
+        curr_sub_len = max(5, getattr(self, "sub_len", 5))
+
+        # If long clip, delegate to _upscale_long_clip
+        if len(frames) > curr_sub_len:
+            if self.enable_profiling and not self._in_long_clip:
+                self._in_long_clip = True
+                self._step_timer.reset()
+                try:
+                    res = self._upscale_long_clip(frames)
+                    self._record_profile()
+                    return res
+                finally:
+                    self._in_long_clip = False
             return self._upscale_long_clip(frames)
+
+        if self.enable_profiling and not self._in_long_clip:
+            self._step_timer.reset()
 
         orig_h, orig_w = frames[0].shape[:2]
         target_w = orig_w * self.scale
         target_h = orig_h * self.scale
 
-        # Ensure temporal dimension is exactly 5 frames (4*1 + 1)
+        # Ensure temporal dimension is exactly curr_sub_len frames (4k + 1)
         T_orig = len(frames)
-        if T_orig < 5:
-            padded_frames = list(frames) + [frames[-1]] * (5 - T_orig)
+        if T_orig < curr_sub_len:
+            padded_frames = list(frames) + [frames[-1]] * (curr_sub_len - T_orig)
         else:
-            padded_frames = frames[:5]
+            padded_frames = frames[:curr_sub_len]
 
         # If real neural model is loaded and GPU is available
         if self.model == "SeedVR2_Loaded" and self.runner is not None:
@@ -432,104 +571,149 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
                 import models.dit_v2.na as na
                 from torchvision.transforms import Compose, Lambda, Normalize
 
-                # Determine internal inference resolution based on orientation
-                if orig_h >= orig_w:
-                    res_h, res_w = 1280, 720
-                else:
-                    res_h, res_w = 720, 1280
+                dtype = self.torch_dtype or (torch.float16 if self.precision == "fp16" else torch.bfloat16)
+                is_resident = (getattr(self, "effective_memory_mode", "offload") == "resident")
 
-                video_np = np.stack(padded_frames, axis=0)
-                video_tensor = torch.from_numpy(video_np).permute(0, 3, 1, 2).float() / 255.0
-                transform = Compose([
-                    NaResize(resolution=(res_h * res_w) ** 0.5, mode="area", downsample_only=False),
-                    Lambda(lambda x: torch.clamp(x, 0.0, 1.0)),
-                    DivisibleCrop((16, 16)),
-                    Normalize(0.5, 0.5),
-                    Rearrange("t c h w -> c t h w"),
-                ])
-                cond_video = transform(video_tensor).unsqueeze(0).to(torch.bfloat16)
+                with self._step_timer.timed("prep_input"):
+                    # Determine internal inference resolution (Phase 4.0)
+                    if getattr(self, "model_resolution", "native") == "match_target":
+                        res_w = int(round(target_w))
+                        res_h = int(round(target_h))
+                    else:
+                        if orig_h >= orig_w:
+                            res_h, res_w = 1280, 720
+                        else:
+                            res_h, res_w = 720, 1280
 
-                # Step 1: VAE Encode on GPU
-                self.runner.vae.to(device=get_device(), dtype=torch.bfloat16)
-                _configure_vae_for_colab(self.runner.vae)
-                with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
-                    cond_latents = self.runner.vae_encode([cond_video.squeeze(0)])
-                cond_latents = [c.to("cpu", dtype=torch.bfloat16) for c in cond_latents]
-                del cond_video
-                _clear_vae_memory(self.runner.vae)
-                self.runner.vae.to("cpu")
-                _clear_gpu()
+                    video_np = np.stack(padded_frames, axis=0)
+                    video_tensor = torch.from_numpy(video_np).permute(0, 3, 1, 2).float() / 255.0
+                    transform = Compose([
+                        NaResize(resolution=(res_h * res_w) ** 0.5, mode="area", downsample_only=False),
+                        Lambda(lambda x: torch.clamp(x, 0.0, 1.0)),
+                        DivisibleCrop((16, 16)),
+                        Normalize(0.5, 0.5),
+                        Rearrange("t c h w -> c t h w"),
+                    ])
+                    cond_video = transform(video_tensor).unsqueeze(0).to(device=get_device() if is_resident else "cpu", dtype=dtype)
+
+                # Step 1: VAE Encode
+                with self._step_timer.timed("vae_encode_to_gpu"):
+                    if not is_resident:
+                        self.runner.vae.to(device=get_device(), dtype=dtype)
+                        _configure_vae_for_colab(self.runner.vae)
+
+                with self._step_timer.timed("vae_encode"):
+                    with torch.no_grad(), torch.autocast("cuda", dtype=dtype):
+                        cond_latents = self.runner.vae_encode([cond_video.squeeze(0).to(get_device())])
+
+                with self._step_timer.timed("vae_encode_to_cpu"):
+                    if not is_resident:
+                        cond_latents = [c.to("cpu", dtype=dtype) for c in cond_latents]
+                        del cond_video
+                        _clear_vae_memory(self.runner.vae)
+                        self.runner.vae.to("cpu")
+                        _clear_gpu()
+                    else:
+                        del cond_video
+                        _clear_vae_memory(self.runner.vae)
 
                 # Step 2: DiT Sampling on GPU
-                self.runner.dit.to(device=get_device(), dtype=torch.bfloat16)
-                cond_latents_cuda = [c.to(get_device(), dtype=torch.bfloat16) for c in cond_latents]
-                # Fixed seed: identical noise for every clip -> consistent hallucinated detail
-                # (lips/nose/eyes) across chunk boundaries instead of flickering "random sharpness".
-                noises = []
-                for latent in cond_latents_cuda:
-                    gen = torch.Generator(device=latent.device).manual_seed(42)
-                    noises.append(torch.randn(latent.shape, generator=gen, device=latent.device, dtype=latent.dtype))
-                conditions = [
-                    self.runner.get_condition(noise, task="sr", latent_blur=latent_blur)
-                    for noise, latent_blur in zip(noises, cond_latents_cuda)
-                ]
+                with self._step_timer.timed("dit_to_gpu"):
+                    if not is_resident:
+                        self.runner.dit.to(device=get_device(), dtype=dtype)
+                        cond_latents_cuda = [c.to(get_device(), dtype=dtype) for c in cond_latents]
+                    else:
+                        cond_latents_cuda = cond_latents
 
-                latents, latents_shapes = na.flatten(noises)
-                latents_cond, _ = na.flatten(conditions)
-                text_pos_embeds, text_pos_shapes = na.flatten(self.text_embeds["texts_pos"])
+                    noises = []
+                    for latent in cond_latents_cuda:
+                        gen = torch.Generator(device=latent.device).manual_seed(self.seed) if self.seed is not None else None
+                        noises.append(torch.randn(latent.shape, generator=gen, device=latent.device, dtype=latent.dtype))
+                    conditions = [
+                        self.runner.get_condition(noise, task="sr", latent_blur=latent_blur)
+                        for noise, latent_blur in zip(noises, cond_latents_cuda)
+                    ]
 
-                was_training = self.runner.dit.training
-                self.runner.dit.eval()
-                with torch.no_grad(), torch.autocast("cuda", torch.bfloat16, enabled=True):
-                    latents = self.runner.sampler.sample(
-                        x=latents,
-                        f=lambda args: classifier_free_guidance_dispatcher(
-                            pos=lambda: self.runner.dit(
-                                vid=torch.cat([args.x_t, latents_cond], dim=-1),
-                                txt=text_pos_embeds,
-                                vid_shape=latents_shapes,
-                                txt_shape=text_pos_shapes,
-                                timestep=args.t.repeat(len(noises)),
-                            ).vid_sample,
-                            neg=lambda: None,
-                            scale=1.0,
-                            rescale=0.0,
-                        ),
-                    )
-                self.runner.dit.train(was_training)
-                latents = na.unflatten(latents, latents_shapes)
-                latents_cpu = [l.to("cpu", dtype=torch.bfloat16) for l in latents]
+                    latents, latents_shapes = na.flatten(noises)
+                    latents_cond, _ = na.flatten(conditions)
+                    text_pos_embeds, text_pos_shapes = na.flatten(self.text_embeds["texts_pos"])
 
-                # Step 3: Offload DiT to CPU and free all sampling buffers
-                self.runner.dit.to("cpu")
-                del noises, cond_latents, cond_latents_cuda, conditions, latents, latents_cond, text_pos_embeds
-                _clear_gpu()
+                with self._step_timer.timed("dit_sampling"):
+                    was_training = self.runner.dit.training
+                    self.runner.dit.eval()
+                    with torch.no_grad(), torch.autocast("cuda", dtype, enabled=True):
+                        latents = self.runner.sampler.sample(
+                            x=latents,
+                            f=lambda args: classifier_free_guidance_dispatcher(
+                                pos=lambda: self.runner.dit(
+                                    vid=torch.cat([args.x_t, latents_cond], dim=-1),
+                                    txt=text_pos_embeds,
+                                    vid_shape=latents_shapes,
+                                    txt_shape=text_pos_shapes,
+                                    timestep=args.t.repeat(len(noises)),
+                                ).vid_sample,
+                                neg=lambda: None,
+                                scale=1.0,
+                                rescale=0.0,
+                            ),
+                        )
+                    self.runner.dit.train(was_training)
+
+                    # Check NaN / Inf on sampling output (Phase 2.4 guardrail)
+                    has_nan = any(torch.isnan(l).any() or torch.isinf(l).any() for l in (latents if isinstance(latents, (list, tuple)) else [latents]))
+                    if has_nan:
+                        print(f"[SeedVR2 Engine] Cảnh báo: Phát hiện NaN/Inf trong latents DiT với precision={self.precision}!")
+
+                with self._step_timer.timed("dit_to_cpu"):
+                    latents = na.unflatten(latents, latents_shapes)
+                    if not is_resident:
+                        latents_cpu = [l.to("cpu", dtype=dtype) for l in latents]
+                        self.runner.dit.to("cpu")
+                        del noises, cond_latents, cond_latents_cuda, conditions, latents, latents_cond, text_pos_embeds
+                        _clear_gpu()
+                    else:
+                        latents_device = latents
+                        del noises, cond_latents, conditions, latents, latents_cond, text_pos_embeds
 
                 # Step 4: VAE Decode on GPU
-                self.runner.vae.to(device=get_device(), dtype=torch.bfloat16)
-                _configure_vae_for_colab(self.runner.vae)
-                latents_bf16 = [l.to(device=get_device(), dtype=torch.bfloat16) for l in latents_cpu]
-                with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
-                    video_tensors = self.runner.vae_decode(latents_bf16)
-                _clear_vae_memory(self.runner.vae)
-                self.runner.vae.to("cpu")
-                del latents_bf16, latents_cpu
-                _clear_gpu()
+                with self._step_timer.timed("vae_decode_to_gpu"):
+                    if not is_resident:
+                        self.runner.vae.to(device=get_device(), dtype=dtype)
+                        _configure_vae_for_colab(self.runner.vae)
+                        latents_device = [l.to(device=get_device(), dtype=dtype) for l in latents_cpu]
 
-                out = video_tensors[0].to("cpu")
-                if out.ndim == 4:
-                    out = out.permute(1, 2, 3, 0)
-                out_np = out.clip(-1, 1).mul_(0.5).add_(0.5).mul_(255).round().to(torch.uint8).numpy()
+                with self._step_timer.timed("vae_decode"):
+                    with torch.no_grad(), torch.autocast("cuda", dtype=dtype):
+                        video_tensors = self.runner.vae_decode(latents_device)
 
-                # Slice back to original frame count
-                out_np = out_np[:T_orig]
+                with self._step_timer.timed("vae_decode_to_cpu"):
+                    _clear_vae_memory(self.runner.vae)
+                    if not is_resident:
+                        self.runner.vae.to("cpu")
+                        del latents_device, latents_cpu
+                        _clear_gpu()
+                    else:
+                        del latents_device
 
-                # Ensure dimensions match target_w x target_h
-                result_frames = []
-                for f in out_np:
-                    if f.shape[1] != target_w or f.shape[0] != target_h:
-                        f = cv2.resize(f, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
-                    result_frames.append(f)
+                with self._step_timer.timed("post_resize"):
+                    out = video_tensors[0].to("cpu")
+                    if out.ndim == 4:
+                        out = out.permute(1, 2, 3, 0)
+                    out_np = out.clip(-1, 1).mul_(0.5).add_(0.5).mul_(255).round().to(torch.uint8).numpy()
+
+                    # Slice back to original frame count
+                    out_np = out_np[:T_orig]
+
+                    # Ensure dimensions match target_w x target_h
+                    result_frames = []
+                    for f in out_np:
+                        if f.shape[1] != target_w or f.shape[0] != target_h:
+                            f = cv2.resize(f, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
+                        result_frames.append(f)
+
+                if self.enable_profiling and not self._in_long_clip:
+                    self._record_profile()
+
                 return result_frames
 
             except Exception as e:
@@ -542,6 +726,9 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
         for frame in frames:
             up = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LANCZOS4)
             upscaled_frames.append(up)
+
+        if self.enable_profiling and not self._in_long_clip:
+            self._record_profile()
 
         return upscaled_frames
 

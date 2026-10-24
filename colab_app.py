@@ -117,16 +117,43 @@ def cancel_upscale():
     return "Không có tiến trình nào đang chạy."
 
 
+def inspect_video(file_path: Optional[str]) -> str:
+    """Extract metadata using ffprobe and format for UI display."""
+    if not file_path or not os.path.exists(file_path):
+        return "Chưa chọn tệp video."
+    try:
+        m = get_video_metadata(file_path)
+        warn = ""
+        if m.width < 720 or m.height < 720:
+            warn = " ⚠️ *Nguồn độ phân giải thấp, khuyên dùng mô hình SeedVR2 hoặc RealESRGAN.*"
+        return (
+            f"**Thông tin nguồn:** `{m.width}×{m.height}` • **FPS:** `{m.fps:.2f}` • "
+            f"**Tổng khung:** `{m.total_frames}` • **Thời lượng:** `{m.duration_sec:.1f}s` • "
+            f"**Âm thanh:** `{'Có' if m.has_audio else 'Không'}`{warn}"
+        )
+    except Exception as e:
+        return f"Lỗi đọc thông tin: {e}"
+
+
 def run_upscale(
     input_file_path: Optional[str],
     model_choice: str,
     target_scale_choice: str,
     tile_choice: str,
     control_strength: float,
+    denoise_method_choice: str,
     pre_denoise_pct: int,
     recover_detail_pct: int,
     sharpen_pct: int,
     film_grain_checked: bool,
+    memory_mode_choice: str,
+    sub_len_choice: int,
+    model_res_choice: str,
+    seed_input: int,
+    random_seed_checked: bool,
+    checkpoint_enabled: bool,
+    resume_checked: bool,
+    preview_mode: bool = False,
     progress=gr.Progress(track_tqdm=False),
 ):
     """Execute video upscaling pipeline."""
@@ -138,10 +165,29 @@ def run_upscale(
     in_path = Path(input_file_path)
     output_dir = Path("outputs")
     output_dir.mkdir(parents=True, exist_ok=True)
-    out_path = output_dir / f"{in_path.stem}_upscaled.mp4"
 
-    # Scale mapping
-    target_scale = 4 if "4" in str(target_scale_choice) else 2
+    if preview_mode:
+        out_path = output_dir / f"{in_path.stem}_preview.mp4"
+    else:
+        out_path = output_dir / f"{in_path.stem}_upscaled.mp4"
+
+    # Scale mapping (Phase 4.1)
+    if "1.5" in str(target_scale_choice):
+        target_scale = 1.5
+    elif "4" in str(target_scale_choice):
+        target_scale = 4.0
+    else:
+        target_scale = 2.0
+
+    # Memory mode mapping
+    mem_mode = "auto"
+    if "resident" in memory_mode_choice.lower():
+        mem_mode = "resident"
+    elif "offload" in memory_mode_choice.lower():
+        mem_mode = "offload"
+
+    # Model resolution mapping
+    model_res = "match_target" if "match" in model_res_choice.lower() else "native"
 
     # Tile mapping
     if "toàn khung" in tile_choice.lower() or "full" in tile_choice.lower():
@@ -163,12 +209,21 @@ def run_upscale(
     model_scale = 2
     model_file_str = "models/model.onnx"
 
+    used_seed = None if random_seed_checked else int(seed_input)
+
     if "seedvr" in model_choice.lower():
         from ecoup.engine.seedvr2_engine import SeedVR2UpscaleEngine
-        engine = SeedVR2UpscaleEngine(scale=2)
+        engine = SeedVR2UpscaleEngine(
+            scale=int(round(target_scale)) if target_scale >= 2 else 2,
+            precision="fp16",
+            seed=used_seed,
+            memory_mode=mem_mode,
+            sub_len=int(sub_len_choice),
+            model_resolution=model_res,
+        )
         model_name = "SeedVR2-3B"
         model_scale = 2
-        engine.load(model_path="ckpts/seedvr2_ema_3b.pth", precision="bfloat16", provider="cuda")
+        engine.load(model_path="ckpts/seedvr2_ema_3b.pth", precision="fp16", provider="cuda")
         model_file_str = "ckpts/seedvr2_ema_3b.pth"
     elif "ccsr" in model_choice.lower():
         from ecoup.engine.ccsr_engine import CcsrUpscaleEngine
@@ -211,28 +266,44 @@ def run_upscale(
     if engine is not None and hasattr(engine, "scale") and engine.scale > 0:
         model_scale = engine.scale
 
+    # Checkpoint configuration (Phase 1.1)
+    drive_chk = Path("/content/drive/MyDrive/ecoup_checkpoints")
+    chk_dir = str(drive_chk) if drive_chk.parent.exists() else ".ecoup_state"
+
     cfg = AppConfig(
         model=ModelConfig(
             name=model_name,
             path=model_file_str,
             scale=model_scale,
             target_scale=target_scale,
+            precision="fp16",
         ),
         inference=InferenceConfig(
             provider="auto",
             tile_size=tile_sz,
             tile_overlap=tile_ov,
             control_strength=control_strength,
-            clip_length=5 if "seedvr" in model_choice.lower() else 16,
+            clip_length=int(sub_len_choice) if "seedvr" in model_choice.lower() else 16,
             clip_overlap=1 if "seedvr" in model_choice.lower() else 2,
+            seed=used_seed,
+            memory_mode=mem_mode,
+            sub_len=int(sub_len_choice),
+            model_resolution=model_res,
         ),
         thermal=ThermalConfig(enabled=False),
         frame_saving=FrameSavingConfig(
             enable_dedup=("ccsr" not in model_choice.lower() and "seedvr" not in model_choice.lower())
         ),
-        checkpoint=CheckpointConfig(enabled=False),
+        checkpoint=CheckpointConfig(
+            enabled=checkpoint_enabled and not preview_mode,
+            dir=chk_dir,
+            interval_frames=100,
+        ),
         encode=EncodeConfig(codec="auto", copy_audio=True),
-        pre_process=PreProcessConfig(denoise=pre_denoise_pct / 100.0),
+        pre_process=PreProcessConfig(
+            method="none" if "none" in denoise_method_choice.lower() else ("nlmeans" if "nlmeans" in denoise_method_choice.lower() else "bilateral"),
+            denoise=pre_denoise_pct / 100.0,
+        ),
         post_process=PostProcessConfig(
             color_fix=True,
             recover_detail=recover_detail_pct / 100.0,
@@ -249,7 +320,6 @@ def run_upscale(
         mins = int(eta_sec // 60)
         secs = int(eta_sec % 60)
 
-        # Telemetry
         used_gb, total_gb, gpu_name = get_gpu_vram_info()
         vram_info = ""
         if total_gb > 0:
@@ -260,7 +330,7 @@ def run_upscale(
 
         last_status = (
             f"Khung hình {frame_idx}/{total_frames} ({int(pct * 100)}%) "
-            f"• {fps:.1f} fps • Còn lại: {mins:02d}:{secs:02d}{vram_info} • {prov}"
+            f"• {fps:.2f} fps • Còn lại: {mins:02d}:{secs:02d}{vram_info} • {prov}"
         )
         progress(pct, desc=last_status)
 
@@ -272,9 +342,30 @@ def run_upscale(
     )
     active_pipeline = pipeline
 
+    # Handle preview mode (Phase 4.4)
+    run_input_path = in_path
+    if preview_mode:
+        preview_in = output_dir / f"{in_path.stem}_preview_raw.mp4"
+        cap = cv2.VideoCapture(str(in_path))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(str(preview_in), fourcc, fps, (w, h))
+        count = 0
+        while count < 30:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            writer.write(frame)
+            count += 1
+        cap.release()
+        writer.release()
+        run_input_path = preview_in
+
     try:
         progress(0.02, desc="Đang phân tích video...")
-        pipeline.run(in_path, out_path, resume=False)
+        pipeline.run(run_input_path, out_path, resume=(resume_checked and not preview_mode))
     except Exception as e:
         if pipeline._cancelled:
             return None, "Quá trình xử lý đã được hủy thành công."
@@ -286,7 +377,8 @@ def run_upscale(
         return None, "Quá trình xử lý đã được hủy thành công."
 
     progress(1.0, desc="Hoàn tất xử lý.")
-    return str(out_path), f"Hoàn tất. Video đã lưu: {out_path.name}"
+    tag = "Xem thử (30 khung)" if preview_mode else "Toàn bộ"
+    return str(out_path), f"Hoàn tất ({tag}). Video đã lưu: {out_path.name}"
 
 
 def create_ui():
@@ -316,6 +408,8 @@ def create_ui():
                 file_types=[".mp4", ".mov", ".mkv", ".avi", ".webm"],
                 type="filepath",
             )
+            video_info_md = gr.Markdown("Chưa chọn tệp video.")
+            in_file.change(fn=inspect_video, inputs=[in_file], outputs=[video_info_md])
 
         with gr.Group():
             gr.Markdown("#### 2. Cấu hình xử lý")
@@ -326,8 +420,12 @@ def create_ui():
                     label="Mô hình AI",
                 )
                 scale_dd = gr.Dropdown(
-                    choices=["2x", "4x"],
-                    value="2x",
+                    choices=[
+                        "1.5x (1080p Dọc - 1080×1920)",
+                        "2x (1440p Dọc - 1440×2560)",
+                        "4x",
+                    ],
+                    value="2x (1440p Dọc - 1440×2560)",
                     label="Tỉ lệ phóng đại",
                 )
                 tile_dd = gr.Dropdown(
@@ -341,6 +439,15 @@ def create_ui():
                 )
 
             with gr.Row():
+                denoise_method_dd = gr.Dropdown(
+                    choices=[
+                        "bilateral (Lọc cạnh biên)",
+                        "nlmeans (Lọc chi tiết)",
+                        "none (Không lọc)",
+                    ],
+                    value="bilateral (Lọc cạnh biên)",
+                    label="Phương pháp khử nhiễu",
+                )
                 denoise_sl = gr.Slider(
                     minimum=0,
                     maximum=100,
@@ -376,11 +483,56 @@ def create_ui():
                     label="Bù hạt phim (Film Grain)",
                 )
 
+            with gr.Accordion("⚙️ Cấu hình Nâng cao (Tối ưu GPU & SeedVR2)", open=True):
+                with gr.Row():
+                    memory_mode_dd = gr.Dropdown(
+                        choices=[
+                            "auto (Tự chọn theo VRAM)",
+                            "resident (Nhanh nhất - Giữ GPU)",
+                            "offload (Bảo vệ VRAM 16GB)",
+                        ],
+                        value="auto (Tự chọn theo VRAM)",
+                        label="Chế độ bộ nhớ (Memory Mode)",
+                    )
+                    sub_len_dd = gr.Dropdown(
+                        choices=[5, 9, 13],
+                        value=5,
+                        label="Cửa sổ thời gian DiT (Temporal Window)",
+                    )
+                    model_res_dd = gr.Dropdown(
+                        choices=[
+                            "native (Gốc 720p - Ổn định)",
+                            "match_target (Khớp độ phân giải phóng đại)",
+                        ],
+                        value="native (Gốc 720p - Ổn định)",
+                        label="Độ phân giải nội bộ DiT",
+                    )
+
+                with gr.Row():
+                    seed_num = gr.Number(
+                        value=42,
+                        label="Seed cố định (Khử nhấp nháy chi tiết)",
+                        precision=0,
+                    )
+                    random_seed_cb = gr.Checkbox(
+                        value=False,
+                        label="Dùng Seed ngẫu nhiên (None)",
+                    )
+                    checkpoint_cb = gr.Checkbox(
+                        value=True,
+                        label="Bật Checkpoint lưu phân đoạn",
+                    )
+                    resume_cb = gr.Checkbox(
+                        value=False,
+                        label="Tiếp tục job dở (Resume)",
+                    )
+
         with gr.Group():
             gr.Markdown("#### 3. Điều khiển")
             with gr.Row():
-                btn_run = gr.Button("Bắt đầu xử lý", variant="primary", size="lg", scale=3)
-                btn_cancel = gr.Button("Hủy bỏ", variant="stop", size="lg", scale=1)
+                btn_preview = gr.Button("⚡ Xem thử nhanh (30 khung)", variant="secondary", size="lg", scale=2)
+                btn_run = gr.Button("🚀 Bắt đầu xử lý toàn bộ", variant="primary", size="lg", scale=3)
+                btn_cancel = gr.Button("⏹️ Hủy bỏ", variant="stop", size="lg", scale=1)
 
             status_output = gr.Textbox(
                 label="Trạng thái",
@@ -396,17 +548,48 @@ def create_ui():
                 interactive=False,
             )
 
-        # Handle Run & Cancel
+        common_inputs = [
+            in_file,
+            model_dd,
+            scale_dd,
+            tile_dd,
+            ctrl_strength_sl,
+            denoise_method_dd,
+            denoise_sl,
+            recover_sl,
+            sharpen_sl,
+            grain_cb,
+            memory_mode_dd,
+            sub_len_dd,
+            model_res_dd,
+            seed_num,
+            random_seed_cb,
+            checkpoint_cb,
+            resume_cb,
+        ]
+
+        def on_run_full(*args):
+            return run_upscale(*args, preview_mode=False)
+
+        def on_run_preview(*args):
+            return run_upscale(*args, preview_mode=True)
+
         run_event = btn_run.click(
-            fn=run_upscale,
-            inputs=[in_file, model_dd, scale_dd, tile_dd, ctrl_strength_sl, denoise_sl, recover_sl, sharpen_sl, grain_cb],
+            fn=on_run_full,
+            inputs=common_inputs,
+            outputs=[out_file, status_output],
+        )
+
+        preview_event = btn_preview.click(
+            fn=on_run_preview,
+            inputs=common_inputs,
             outputs=[out_file, status_output],
         )
 
         btn_cancel.click(
             fn=cancel_upscale,
             outputs=[status_output],
-            cancels=[run_event],
+            cancels=[run_event, preview_event],
         )
 
     return demo

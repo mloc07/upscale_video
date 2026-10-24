@@ -91,7 +91,6 @@ class CheckpointManager:
                 "-map", "1:a:0?",
                 "-c:v", "copy",
                 "-c:a", "copy",
-                "-shortest",
             ])
         else:
             cmd.extend([

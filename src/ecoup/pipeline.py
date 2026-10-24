@@ -50,13 +50,23 @@ class UpscalePipeline:
         self._paused = paused
 
     def _preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
-        """Pre-processing: Edge-preserving Bilateral Filter to wash away compression noise before AI."""
-        if hasattr(self.config, "pre_process") and self.config.pre_process.denoise > 0.0:
-            strength = self.config.pre_process.denoise
+        """Pre-processing: Edge-preserving Bilateral Filter / NLMeans to wash away compression noise."""
+        if not hasattr(self.config, "pre_process"):
+            return frame
+        pp = self.config.pre_process
+        method = getattr(pp, "method", "bilateral").lower()
+        if method == "none" or pp.denoise <= 0.0:
+            return frame
+
+        strength = pp.denoise
+        if method == "nlmeans":
+            h_val = max(1.0, strength * 10.0)
+            denoised = cv2.fastNlMeansDenoisingColored(frame, None, h=h_val, hColor=h_val, templateWindowSize=7, searchWindowSize=15)
+            return cv2.addWeighted(denoised, strength, frame, 1.0 - strength, 0) if strength < 1.0 else denoised
+        else:
             sigma = 15.0 + strength * 45.0
             denoised = cv2.bilateralFilter(frame, d=5, sigmaColor=sigma, sigmaSpace=sigma)
             return cv2.addWeighted(denoised, strength, frame, 1.0 - strength, 0) if strength < 1.0 else denoised
-        return frame
 
     def _postprocess_frame(self, out_frame: np.ndarray, orig_frame: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
         """Post-processing: Color Fix, Recover Original Detail, Sharpening, and Film Grain."""
@@ -111,6 +121,18 @@ class UpscalePipeline:
             upscale_tile = self.engine.upscale
         elif self.engine is not None and hasattr(self.engine, "upscale_clip"):
             upscale_tile = None
+            if hasattr(self.engine, "scale"):
+                self.engine.scale = int(round(target_scale))
+            if hasattr(self.engine, "seed") and hasattr(self.config.inference, "seed"):
+                self.engine.seed = self.config.inference.seed
+            if hasattr(self.engine, "sub_len") and hasattr(self.config.inference, "sub_len"):
+                self.engine.sub_len = self.config.inference.sub_len
+            if hasattr(self.engine, "model_resolution") and hasattr(self.config.inference, "model_resolution"):
+                self.engine.model_resolution = self.config.inference.model_resolution
+            if hasattr(self.engine, "memory_mode") and hasattr(self.config.inference, "memory_mode"):
+                self.engine.memory_mode = self.config.inference.memory_mode
+            if hasattr(self.engine, "precision") and hasattr(self.config.model, "precision"):
+                self.engine.precision = self.config.model.precision
         else:
             self.logger.warning(
                 f"Không có inference engine cho model '{self.config.model.path}'. "
@@ -304,9 +326,9 @@ class UpscalePipeline:
                                 write_frame_out(f, start_frame + processed_count + 1)
                             prev_tail = []
                         else:
-                            for f in postprocessed_chunk[clip_ov : step + clip_ov]:
+                            for f in postprocessed_chunk[clip_ov : step]:
                                 write_frame_out(f, start_frame + processed_count + 1)
-                            prev_tail = postprocessed_chunk[step + clip_ov :]
+                            prev_tail = postprocessed_chunk[step:]
 
                     chunk_idx += 1
             else:
@@ -365,6 +387,9 @@ class UpscalePipeline:
         if not self._cancelled and (start_frame + processed_count >= meta.total_frames or not self.config.checkpoint.enabled):
             if self.config.checkpoint.enabled and segments:
                 self.logger.info(f"Concatenating {len(segments)} segments and muxing audio...")
+                for s in segments:
+                    meta_s = get_video_metadata(s)
+                    self.logger.info(f"  Segment {Path(s).name}: {meta_s.total_frames} frames")
                 chk_mgr.concat_segments(
                     segment_paths=segments,
                     final_output_path=output_file,
@@ -374,3 +399,33 @@ class UpscalePipeline:
 
             self.logger.info(f"Upscaling completed successfully! Output saved to: {output_file}")
             self.logger.info(f"Dedup stats: {dedup.skipped_frames}/{dedup.total_frames} frames skipped ({dedup.skip_rate:.1f}%)")
+
+            # Save sidecar metadata JSON
+            metadata_json = output_file.with_suffix(".json")
+            try:
+                import json
+                run_meta = {
+                    "input_file": str(input_file),
+                    "output_file": str(output_file),
+                    "original_width": meta.width,
+                    "original_height": meta.height,
+                    "target_width": out_w,
+                    "target_height": out_h,
+                    "fps": float(meta.fps),
+                    "total_frames": meta.total_frames,
+                    "processed_frames": start_frame + processed_count,
+                    "model_name": self.config.model.name,
+                    "scale": scale,
+                    "target_scale": target_scale,
+                    "seed": getattr(self.config.inference, "seed", None),
+                    "precision": getattr(self.config.model, "precision", "fp16"),
+                    "memory_mode": getattr(self.config.inference, "memory_mode", "auto"),
+                    "sub_len": getattr(self.config.inference, "sub_len", 5),
+                    "model_resolution": getattr(self.config.inference, "model_resolution", "native"),
+                    "elapsed_sec": round(time.time() - start_time, 2),
+                }
+                with open(metadata_json, "w", encoding="utf-8") as f:
+                    json.dump(run_meta, f, indent=2)
+                self.logger.info(f"Đã lưu siêu dữ liệu cấu hình vào: {metadata_json}")
+            except Exception as e:
+                self.logger.warning(f"Không thể lưu metadata JSON: {e}")

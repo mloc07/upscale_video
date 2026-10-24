@@ -290,7 +290,6 @@ class VideoWriter:
                 "-map", "0:v:0",
                 "-map", "1:a:0?",
                 "-c:a", "copy",
-                "-shortest",
             ])
         else:
             cmd.extend([

@@ -24,9 +24,20 @@ Hệ thống AI Super-Resolution cho Video tiết kiệm VRAM và kiểm soát n
 
 | Mô hình | Môi trường tối ưu | Ưu điểm nổi bật | Khi nào nên dùng? |
 |---|---|---|---|
-| 👑 **SeedVR2-3B (DiT)** | Google Colab (Tesla T4 16GB / A100) | Triệt tiêu flicker, da người cực nét tự nhiên, giữ trọn nhận dạng | **Khuyên dùng số 1** cho video người thật, chân dung, vlog, podcast từ 720p lên 1440p |
+| 👑 **SeedVR2-3B (DiT)** | Google Colab (Tesla T4 16GB / L4 24GB / A100) | Triệt tiêu flicker, da người cực nét tự nhiên, giữ trọn nhận dạng | **Khuyên dùng số 1** cho video người thật, chân dung, vlog, podcast từ 720p lên 1440p |
 | ⚡ **NomosUni 2x / RealESRGAN** | Cục bộ (RTX 3050 Laptop 4GB) | VRAM chỉ ~1.2 – 1.8 GB, GPU cực mát (<70°C), tốc độ cao | Phù hợp xem trước (local preview) trên máy cá nhân hoặc video hoạt hình/anime |
 | ⚙️ **CCSR v2 (Diffusion)** | Google Colab (Tesla T4 16GB) | Kiểm soát cấu trúc qua ControlNet (ghim `diffusers==0.21.4`) | Dự phòng khi muốn can thiệp sâu vào cấu trúc hình ảnh qua prompt/control strength |
+
+### Khuyến nghị cấu hình phần cứng cho SeedVR2 (Hardware Recommendations)
+
+| GPU | VRAM khả dụng | `memory_mode` | `precision` | `sub_len` | `model_resolution` | Tốc độ đo đạc thực tế |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| **NVIDIA Tesla T4** | 15.0 GB | `offload` | `fp16` / `bf16` | 5 | `native` | ~0.14 – 0.18 FPS (VRAM 9.85 GB) |
+| **NVIDIA L4** | 22.0 GB | **`resident`** | **`fp16`** | 5 | `native` | **~0.35 – 0.51 FPS (VRAM 16.19 GB)** |
+| **NVIDIA A100 (40GB/80GB)** | 40.0 / 80.0 GB | `resident` | `fp16` | 9 hoặc 13 | `native` hoặc `match_target` | **> 0.60 FPS** |
+
+> [!TIP]
+> **Chế độ Resident (`memory_mode: resident`)** loại bỏ hoàn toàn quá trình chuyển đổi DiT và VAE qua lại giữa RAM CPU và GPU qua PCIe trong mỗi khối, giúp tăng tốc **2.4 lần** (từ 69s xuống 28s cho 10 khung hình). Chế độ này tự động kích hoạt trên các GPU có từ 14GB VRAM trống trở lên (L4, A100, RTX 3090/4090).
 
 ---
 
@@ -118,5 +129,10 @@ python scripts/benchmark_long_video.py
 ## 7. Hạn chế đã biết & Lưu ý kỹ thuật
 
 1. **Phiên bản thư viện CCSR**: Mã nguồn CCSR v2 yêu cầu chính xác `diffusers==0.21.4` và `transformers==4.35.2`. Phiên bản mới hơn sẽ gây lỗi chữ ký tham số trong `StableDiffusionControlNetPipeline`.
-2. **Quản lý bộ nhớ VRAM cho SeedVR2**: Bản un-tiled gốc của ByteDance nhắm tới GPU H100 80GB. Trên Tesla T4 16GB, bắt buộc dùng trọng số FP8, VAE Tiling, và hoán đổi khối (block swap) để tránh tràn bộ nhớ.
-3. **Deduplication trên Video Engine**: Mặc định tính năng Dedup sẽ tự động tắt khi sử dụng các engine xử lý theo clip (`is_clip_engine`) để bảo vệ tính liên tục thời gian của mô hình diffusion.
+2. **Quản lý bộ nhớ VRAM cho SeedVR2**:
+   - Ở chế độ `resident` trên GPU 24GB (L4/RTX 3090/4090), VRAM duy trì ở mức **16.19 GB** cho cửa sổ 5 khung (`sub_len: 5`).
+   - Nếu chạy `model_resolution: match_target` trực tiếp ở 1440×2560 trên GPU 24GB sẽ gây lỗi tràn VRAM (CUDA OOM) tại VAE. Do đó, hệ thống mặc định chọn `model_resolution: native` (xử lý nội bộ 720p rồi nội suy Lanczos4 2x) và tự động bắt lỗi OOM để fallback an toàn.
+   - Trên Tesla T4 16GB, bắt buộc dùng `memory_mode: offload` (VRAM đỉnh 9.85 GB) để tránh OOM.
+3. **Quy tắc cửa sổ thời gian $4k+1$**: Tham số `sub_len` của SeedVR2 tuân theo quy tắc số khung $4k+1$ ($5, 9, 13, 17, \dots$) để bảo toàn tính đồng nhất thời gian của khối Causal 3D Conv và Rotary Position Embedding (RoPE).
+4. **Bảo toàn số khung hình & Âm thanh**: Hệ thống đảm bảo 100% số lượng khung hình đầu ra khớp chính xác với đầu vào thông qua thuật toán cắt lớp gối đầu (overlap slicing) và hòa trộn tuyến tính (cross-fade), đồng thời tự động remux track âm thanh gốc (AAC/MP3) vào file thành phẩm.
+5. **Khả năng lặp lại với Seed cố định**: Seed ngẫu nhiên mặc định là `42` (hoặc cấu hình tùy ý/ngẫu nhiên). Mỗi tác vụ xuất ra file siêu dữ liệu cấu hình tương ứng `output_video.json` đặt cạnh video đầu ra nhằm hỗ trợ lặp lại chính xác kết quả thí nghiệm.

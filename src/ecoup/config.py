@@ -24,8 +24,8 @@ class ModelConfig:
             raise ValueError(f"model.scale must be positive, got {self.scale}.")
         if self.target_scale <= 0:
             raise ValueError(f"model.target_scale must be positive, got {self.target_scale}.")
-        if self.precision.lower() not in ("fp16", "fp32"):
-            raise ValueError(f"model.precision must be 'fp16' or 'fp32', got '{self.precision}'.")
+        if self.precision.lower() not in ("fp16", "fp32", "bfloat16", "bf16"):
+            raise ValueError(f"model.precision must be 'fp16', 'bfloat16', or 'fp32', got '{self.precision}'.")
 
 
 @dataclass
@@ -34,9 +34,13 @@ class InferenceConfig:
     tile_size: int = 256
     tile_overlap: int = 16
     batch_size: int = 1
-    control_strength: float = 0.75   # 0.0 - 2.0 (ControlNet conditioning scale; 0.7-0.8 for crisp textures, 1.0 for strict adherence)
+    control_strength: float = 0.75   # 0.0 - 2.0 (ControlNet conditioning scale)
     clip_length: int = 16            # Number of frames per segment for VideoUpscaleEngine
     clip_overlap: int = 2            # Number of overlapping frames for temporal cross-fade blending
+    seed: Optional[int] = 42         # Random seed for DiT diffusion noise (None for random)
+    memory_mode: str = "auto"        # "auto" | "resident" | "offload"
+    sub_len: int = 5                 # Temporal chunk size (4k+1: 5, 9, 13...)
+    model_resolution: str = "native" # "native" (1280x720) | "match_target" (up to 1440x2560)
 
     def validate(self) -> None:
         valid_providers = ("auto", "cuda", "tensorrt", "cpu")
@@ -62,6 +66,12 @@ class InferenceConfig:
             raise ValueError(
                 f"inference.clip_overlap ({self.clip_overlap}) must be less than clip_length ({self.clip_length})."
             )
+        if self.memory_mode.lower() not in ("auto", "resident", "offload"):
+            raise ValueError(f"inference.memory_mode must be 'auto', 'resident', or 'offload', got '{self.memory_mode}'.")
+        if self.sub_len <= 0 or (self.sub_len - 1) % 4 != 0:
+            raise ValueError(f"inference.sub_len must follow 4k+1 rule (5, 9, 13, 17...), got {self.sub_len}.")
+        if self.model_resolution.lower() not in ("native", "match_target"):
+            raise ValueError(f"inference.model_resolution must be 'native' or 'match_target', got '{self.model_resolution}'.")
 
 
 @dataclass
@@ -144,11 +154,21 @@ class CheckpointConfig:
 
 @dataclass
 class PreProcessConfig:
-    denoise: float = 0.0      # 0.0 - 1.0 (Edge-preserving bilateral filter; default 0.0 to prevent softening)
+    method: str = "none"             # "none" | "bilateral" | "hqdn3d" | "nlmeans" | "deblock+hqdn3d"
+    denoise: float = 0.0             # 0.0 - 1.0 (denoise blending strength)
+    spatial_strength: float = 3.0    # Spatial filtering intensity (hqdn3d/nlmeans)
+    temporal_strength: float = 2.0   # Temporal filtering intensity (hqdn3d/nlmeans)
 
     def validate(self) -> None:
+        valid_methods = ("none", "bilateral", "hqdn3d", "nlmeans", "deblock+hqdn3d")
+        if self.method.lower() not in valid_methods:
+            raise ValueError(f"pre_process.method must be one of {valid_methods}, got '{self.method}'.")
         if not (0.0 <= self.denoise <= 1.0):
             raise ValueError(f"pre_process.denoise must be between 0.0 and 1.0, got {self.denoise}.")
+        if self.spatial_strength < 0:
+            raise ValueError(f"pre_process.spatial_strength must be >= 0, got {self.spatial_strength}.")
+        if self.temporal_strength < 0:
+            raise ValueError(f"pre_process.temporal_strength must be >= 0, got {self.temporal_strength}.")
 
 
 @dataclass
