@@ -27,6 +27,16 @@ import numpy as np
 # Prevent CUDA memory fragmentation on Colab Tesla T4 / L4
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
+# Guard against diffusers / torchao version incompatibility (FqnToConfig missing in torchao 0.10)
+try:
+    import torchao.quantization
+    if not hasattr(torchao.quantization, "FqnToConfig"):
+        class FqnToConfig:
+            pass
+        torchao.quantization.FqnToConfig = FqnToConfig
+except Exception:
+    pass
+
 # Ensure src is on sys.path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent / "seedvr_core"))

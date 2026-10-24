@@ -132,6 +132,15 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
         self.device = device
         self.scale = scale
         self.precision = precision
+        # Guard against diffusers / torchao version incompatibility (FqnToConfig missing)
+        try:
+            import torchao.quantization
+            if not hasattr(torchao.quantization, "FqnToConfig"):
+                class FqnToConfig:
+                    pass
+                torchao.quantization.FqnToConfig = FqnToConfig
+        except Exception:
+            pass
         self.seed = seed
         self.memory_mode = memory_mode
         self.sub_len = sub_len
@@ -223,6 +232,15 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
     ) -> None:
         """Load SeedVR2 model weights and initialize pipeline."""
         self.precision = precision
+        # Guard against diffusers / torchao version incompatibility (FqnToConfig missing)
+        try:
+            import torchao.quantization
+            if not hasattr(torchao.quantization, "FqnToConfig"):
+                class FqnToConfig:
+                    pass
+                torchao.quantization.FqnToConfig = FqnToConfig
+        except Exception:
+            pass
         try:
             import torch
             self.torch_dtype = torch.float16 if self.precision == "fp16" else torch.bfloat16
