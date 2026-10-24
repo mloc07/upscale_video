@@ -698,8 +698,6 @@ class SeedVR2UpscaleEngine(VideoUpscaleEngine):
                     if not is_resident:
                         self.runner.vae.to(device=get_device(), dtype=dtype)
                         latents_device = [l.to(device=get_device(), dtype=dtype) for l in latents_cpu]
-                    else:
-                        latents_device = latents
                     _configure_vae_for_colab(self.runner.vae)
 
                 with self._step_timer.timed("vae_decode"):
