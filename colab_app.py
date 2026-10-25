@@ -539,13 +539,27 @@ def run_subtitle(
         raise gr.Error("Vui lòng chọn video đầu vào hợp lệ.")
 
     # API key resolution
-    if api_key_input and api_key_input.strip():
-        os.environ["GEMINI_API_KEY"] = api_key_input.strip()
-    elif Path("/content/.gemini_key").exists():
+    resolved_key = (api_key_input or "").strip()
+    if not resolved_key:
+        resolved_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not resolved_key:
         try:
-            os.environ["GEMINI_API_KEY"] = Path("/content/.gemini_key").read_text(encoding="utf-8").strip()
+            from google.colab import userdata
+            resolved_key = (userdata.get("GEMINI_API_KEY") or "").strip()
         except Exception:
             pass
+    if not resolved_key and Path("/content/.gemini_key").exists():
+        try:
+            resolved_key = Path("/content/.gemini_key").read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+
+    if resolved_key:
+        os.environ["GEMINI_API_KEY"] = resolved_key
+    elif not (source_lang_choice and source_lang_choice.startswith("vi")):
+        raise gr.Error(
+            "⚠️ Chưa tìm thấy Gemini API Key! Vui lòng dán khóa API vào ô 'Khóa Gemini API' trên giao diện (hoặc cấu hình trong Colab Secrets: GEMINI_API_KEY)."
+        )
 
     from ecoup.subtitle.config import SubtitleConfig
     from ecoup.subtitle.pipeline import SubtitlePipeline
@@ -620,7 +634,7 @@ def run_subtitle(
     except Exception as e:
         if pipe._cancelled:
             return None, None, None, None, None, "⏹️ Tiến trình phụ đề đã được hủy thành công."
-        raise e
+        raise gr.Error(f"Lỗi tạo phụ đề: {e}") from e
     finally:
         active_subtitle_pipeline = None
 
@@ -974,9 +988,23 @@ def create_ui():
                                     scale=3,
                                 )
 
+                            _pre_key = os.environ.get("GEMINI_API_KEY", "").strip()
+                            if not _pre_key:
+                                try:
+                                    from google.colab import userdata
+                                    _pre_key = (userdata.get("GEMINI_API_KEY") or "").strip()
+                                except Exception:
+                                    pass
+                            if not _pre_key and Path("/content/.gemini_key").exists():
+                                try:
+                                    _pre_key = Path("/content/.gemini_key").read_text(encoding="utf-8").strip()
+                                except Exception:
+                                    pass
+
                             sub_api_key_tb = gr.Textbox(
-                                label="Khóa Gemini API (Tùy chọn: để trống nếu đã thiết lập GEMINI_API_KEY trên Colab)",
-                                placeholder="Nhập API Key bắt đầu bằng AIzaSy... hoặc để trống",
+                                label="Khóa Gemini API (Dán vào đây hoặc thiết lập trong Colab Secrets)",
+                                placeholder="Đã tìm thấy API Key từ hệ thống (có thể để trống)" if _pre_key else "Dán API Key vào đây (ví dụ: AQ.Ab8... hoặc AIzaSy...)",
+                                value=_pre_key if _pre_key else "",
                                 type="password",
                             )
 

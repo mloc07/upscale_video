@@ -101,8 +101,20 @@ class GeminiTranslator:
         if self._client is None:
             key = os.environ.get(self.cfg.api_key_env, "").strip()
             if not key:
+                try:
+                    from google.colab import userdata
+                    key = (userdata.get(self.cfg.api_key_env) or "").strip()
+                except Exception:
+                    pass
+            if not key and Path("/content/.gemini_key").exists():
+                try:
+                    key = Path("/content/.gemini_key").read_text(encoding="utf-8").strip()
+                except Exception:
+                    pass
+            if not key:
                 raise TranslationError(
-                    f"Environment variable {self.cfg.api_key_env} is not set (API key is never read from files in the repo)."
+                    f"Chưa cấu hình khóa API Gemini ({self.cfg.api_key_env}). "
+                    f"Vui lòng dán khóa API vào ô 'Khóa Gemini API' trên giao diện hoặc thiết lập trong Colab Secrets."
                 )
             self._key = key
             try:
