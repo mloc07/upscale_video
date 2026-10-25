@@ -48,6 +48,22 @@ def _preload_cuda12_libs() -> None:
                     pass
 
 
+def _gpu_used_gb() -> Optional[float]:
+    """GPU memory currently used (GiB) according to nvidia-smi; None if unavailable."""
+    import shutil
+    import subprocess
+
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return None
+    try:
+        out = subprocess.run([exe, "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=10, check=False).stdout.strip().splitlines()
+        return float(out[0]) / 1024.0 if out else None
+    except Exception:
+        return None
+
+
 def _load_wav_float32(path):
     """Read a 16-bit PCM mono WAV into a float32 numpy array in [-1, 1]."""
     import wave
@@ -90,6 +106,7 @@ class FasterWhisperBackend:
             compute = "float16" if device == "cuda" else "int8"
 
         _preload_cuda12_libs()
+        base_used = _gpu_used_gb() if device == "cuda" else None
         t0 = time.time()
         model = WhisperModel(cfg.model, device=device, compute_type=compute)
         peak = None
@@ -113,11 +130,9 @@ class FasterWhisperBackend:
                 if on_segment:
                     on_segment(float(s.end))
             if device == "cuda":
-                try:
-                    import torch
-                    peak = torch.cuda.max_memory_allocated() / 1024 ** 3
-                except Exception:
-                    peak = None
+                # ctranslate2 allocates outside PyTorch, so torch.cuda counters read 0: ask the driver.
+                used = _gpu_used_gb()
+                peak = None if used is None or base_used is None else max(0.0, used - base_used)
             return AsrResult(
                 segments=segs,
                 language=info.language,
