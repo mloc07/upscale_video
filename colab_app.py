@@ -522,6 +522,7 @@ def run_subtitle(
     input_file_path: Optional[str],
     source_lang_choice: str,
     target_lang_choice: str,
+    audio_mode_choice: str,
     whisper_model_choice: str,
     gemini_model_choice: str,
     api_key_input: str,
@@ -565,6 +566,12 @@ def run_subtitle(
     from ecoup.subtitle.pipeline import SubtitlePipeline
 
     cfg = SubtitleConfig()
+
+    # Audio mode & VAD resolution
+    if audio_mode_choice:
+        mode_token = audio_mode_choice.split()[0].strip().lower()
+        if mode_token in ("music", "speech", "off"):
+            cfg.asr.audio_mode = mode_token
 
     # Source language resolution
     if not source_lang_choice or "auto" in source_lang_choice.lower():
@@ -923,6 +930,7 @@ def create_ui():
                             sub_in_file.change(fn=inspect_video, inputs=[sub_in_file], outputs=[sub_video_info_md])
 
                             sub_sample_videos = [
+                                "/content/upscale_video/plan_for_project/tests_video/sub_test_multilingual_light.mp4",
                                 "/content/upscale_video/plan_for_project/tests_video/sub_test_eng.mp4",
                                 "/content/upscale_video/plan_for_project/tests_video/sub_test_cn.mp4",
                                 "/content/upscale_video/plan_for_project/tests_video/sub_test_jp.mp4",
@@ -961,6 +969,17 @@ def create_ui():
                                     label="Ngôn ngữ đích",
                                     scale=2,
                                 )
+
+                            sub_audio_mode_dd = gr.Dropdown(
+                                choices=[
+                                    "music (Âm nhạc / MV / Beat dày - Bắt trọn lời bài hát)",
+                                    "speech (Hội thoại / Vlog / Phim - Lọc tiếng ồn chuẩn)",
+                                    "off (Tắt hoàn toàn bộ lọc VAD)",
+                                ],
+                                value="music (Âm nhạc / MV / Beat dày - Bắt trọn lời bài hát)",
+                                label="Chế độ âm thanh (VAD Audio Mode)",
+                                info="Chọn 'music' cho bài hát/MV để không bị nuốt lời do beat nhạc; chọn 'speech' cho vlog/hội thoại lọc ồn.",
+                            )
 
                         with gr.Group():
                             gr.Markdown("### 2. Mô hình AI & Khóa API")
@@ -1074,6 +1093,7 @@ def create_ui():
                     sub_in_file,
                     sub_source_lang_dd,
                     sub_target_lang_dd,
+                    sub_audio_mode_dd,
                     sub_whisper_dd,
                     sub_gemini_dd,
                     sub_api_key_tb,

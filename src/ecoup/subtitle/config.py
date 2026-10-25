@@ -16,8 +16,13 @@ class AsrConfig:
     device: str = "auto"              # "auto" | "cuda" | "cpu"
     compute_type: str = "auto"        # "auto" | "float16" | "int8_float16" | "int8" | "float32"
     language: Optional[str] = None    # None = auto-detect; otherwise ISO code, e.g. "en", "zh", "ja", "ko"
+    audio_mode: str = "music"         # "music" (optimized for songs/beats) | "speech" (standard VAD for vlogs) | "off" (no VAD)
+    multilingual_chunking: bool = True # Dynamic chunk-level language detection when language=None
     vad_filter: bool = True           # Silero VAD: reduces hallucinated text in silence/music
-    vad_min_silence_ms: int = 500
+    vad_min_silence_ms: int = 800
+    vad_threshold: float = 0.25
+    speech_pad_ms: int = 400
+    no_speech_threshold: float = 0.6
     beam_size: int = 5
     condition_on_previous_text: bool = False  # False reduces repetition loops
 
@@ -26,6 +31,8 @@ class AsrConfig:
             raise ValueError("subtitle.asr.model must be non-empty.")
         if self.device not in ("auto", "cuda", "cpu"):
             raise ValueError(f"subtitle.asr.device must be auto/cuda/cpu, got '{self.device}'.")
+        if self.audio_mode not in ("music", "speech", "off"):
+            raise ValueError(f"subtitle.asr.audio_mode must be 'music', 'speech', or 'off', got '{self.audio_mode}'.")
         if self.beam_size < 1:
             raise ValueError("subtitle.asr.beam_size must be >= 1.")
         if self.vad_min_silence_ms < 0:

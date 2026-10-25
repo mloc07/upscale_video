@@ -118,9 +118,15 @@ def split_segment(seg: Segment, cfg: SegmentConfig) -> list[Segment]:
     t = seg.start
     for i, c in enumerate(chunks):
         share = dur * len(c) / total_chars
-        end = seg.end if i == len(chunks) - 1 else t + share
-        out.append(Segment(start=t, end=end, text=c, language=seg.language))
-        t = end
+        if share > cfg.max_duration and len(c) < 10:
+            c_dur = min(share, max(cfg.min_duration, float(len(c)) * 1.5, 3.5))
+            end = t + c_dur
+            out.append(Segment(start=t, end=end, text=c, language=seg.language))
+            t = t + share
+        else:
+            end = seg.end if i == len(chunks) - 1 else t + share
+            out.append(Segment(start=t, end=end, text=c, language=seg.language))
+            t = end
     return out
 
 
