@@ -1036,7 +1036,7 @@ def create_ui():
                             gr.Markdown(
                                 """
                                 - **Quy trình 1 chạm**: Tách âm thanh $\\rightarrow$ Nhận diện giọng nói đa ngôn ngữ (Whisper) $\\rightarrow$ Dịch tiếng Việt (Gemini) $\\rightarrow$ Xuất SRT/ASS $\\rightarrow$ Ghép cứng video (FFmpeg libass).
-                                - **An toàn bộ nhớ GPU**: Mô hình Whisper tự động giải phóng $100\%$ VRAM ngay sau khi nhận diện xong. Không xung đột bộ nhớ với các mô hình Upscale.
+                                - **An toàn bộ nhớ GPU**: Mô hình Whisper tự động giải phóng 100% VRAM ngay sau khi nhận diện xong. Không xung đột bộ nhớ với các mô hình Upscale.
                                 - **Bảo vệ nội dung**: Nếu video gốc đã là tiếng Việt, hệ thống tự động nhận diện và bỏ qua bước gọi API Gemini.
                                 - **Tự động phục hồi**: Bộ nhớ đệm (cache) tự động lưu trên máy chủ, khi chạy lại các đoạn đã dịch sẽ không tốn thêm request API.
                                 """
