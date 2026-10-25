@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -234,6 +235,8 @@ def test_auth_error_is_fatal(monkeypatch):
 
 def test_api_key_never_in_error(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "")
+    orig_exists = Path.exists
+    monkeypatch.setattr(Path, "exists", lambda self: False if ".gemini_key" in str(self) else orig_exists(self))
     tr = GeminiTranslator(TranslateConfig(), sleep=lambda _: None)
     with pytest.raises(TranslationError) as ei:
         tr.translate(_segs(1))
