@@ -1,4 +1,4 @@
-"""PyQt6 GUI Main Window for Eco Video Upscaler."""
+"""PyQt6 GUI Main Window for Eco Video Upscaler & Subtitle Studio."""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
     QTextEdit,
     QFileDialog,
     QMessageBox,
+    QTabWidget,
 )
 
 from ecoup.cli import check_gpu, _ensure_path_refreshed
@@ -116,6 +117,30 @@ QTextEdit {
     font-family: 'Consolas', 'Courier New', monospace;
     font-size: 11px;
 }
+QTabWidget::pane {
+    border: 1px solid #2e2e33;
+    border-radius: 6px;
+    background-color: #18181b;
+}
+QTabBar::tab {
+    background-color: #202023;
+    border: 1px solid #2e2e33;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    padding: 8px 16px;
+    margin-right: 3px;
+    color: #a1a1aa;
+    font-weight: 500;
+}
+QTabBar::tab:selected {
+    background-color: #27272a;
+    border-color: #3b82f6;
+    color: #3b82f6;
+    font-weight: 600;
+}
+QTabBar::tab:hover {
+    color: #f4f4f5;
+}
 """
 
 
@@ -149,7 +174,7 @@ class PipelineWorker(QThread):
                 self.log_sig.emit(f"[Thông báo] Không tìm thấy file model AI '{model_path.name}'. Đang chạy chế độ nội suy Lanczos4 chất lượng cao...")
                 import cv2
                 scale = self.config.model.scale
-                def lanczos_fallback(tile: np.ndarray) -> np.ndarray:
+                def lanczos_fallback(tile):
                     th, tw = tile.shape[:2]
                     return cv2.resize(tile, (tw * scale, th * scale), interpolation=cv2.INTER_LANCZOS4)
                 custom_fn = lanczos_fallback
@@ -178,18 +203,68 @@ class PipelineWorker(QThread):
             self.pipeline.cancel()
 
 
+class SubtitleWorker(QThread):
+    """Background worker thread for running the subtitle pipeline."""
+    progress_sig = pyqtSignal(str, float)
+    log_sig = pyqtSignal(str)
+    finished_sig = pyqtSignal(bool, object, str)
+
+    def __init__(self, config, input_path: str, output_path: str, out_dir: str):
+        super().__init__()
+        self.config = config
+        self.input_path = input_path
+        self.output_path = output_path
+        self.out_dir = out_dir
+        self.pipeline = None
+
+    def run(self):
+        try:
+            from ecoup.subtitle.pipeline import SubtitlePipeline
+
+            step_names = {
+                "audio": "Tách âm thanh",
+                "asr": "Nhận dạng giọng nói (Whisper)",
+                "normalize": "Chuẩn hóa câu thoại",
+                "translate": "Dịch tiếng Việt (Gemini)",
+                "srt": "Xuất phụ đề SRT",
+                "burn": "Ghép cứng video (FFmpeg libass)",
+            }
+
+            def on_progress(step: str, frac: float):
+                name = step_names.get(step, step)
+                self.progress_sig.emit(step, frac)
+                self.log_sig.emit(f"[Phụ đề - {name}] Tiến độ: {int(frac * 100)}%")
+
+            self.pipeline = SubtitlePipeline(config=self.config, on_progress=on_progress)
+            self.log_sig.emit(f"Bắt đầu quy trình phụ đề cho: {Path(self.input_path).name}")
+            rep = self.pipeline.run(self.input_path, output=self.output_path, out_dir=self.out_dir)
+
+            if rep.cancelled:
+                self.finished_sig.emit(False, rep, "Tiến trình tạo phụ đề đã bị hủy.")
+            else:
+                self.finished_sig.emit(True, rep, f"Tạo phụ đề thành công! ({rep.cues} câu thoại)")
+        except Exception as e:
+            self.finished_sig.emit(False, None, str(e))
+
+    def cancel(self):
+        if self.pipeline:
+            self.pipeline.cancel()
+
+
 class MainWindow(QMainWindow):
-    """Main window for Eco Video Upscaler."""
+    """Main window for Eco Video Upscaler & Subtitle Studio."""
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Eco Video Upscaler")
-        self.setMinimumSize(780, 680)
+        self.setWindowTitle("Eco Video Upscaler & Subtitle Studio")
+        self.setMinimumSize(820, 720)
         self.setStyleSheet(DARK_STYLE)
 
         self.worker: Optional[PipelineWorker] = None
+        self.sub_worker: Optional[SubtitleWorker] = None
         self.is_paused = False
         self.meta: Optional[VideoMetadata] = None
+        self.sub_meta: Optional[VideoMetadata] = None
 
         self._build_ui()
         self._init_hardware_info()
@@ -198,12 +273,12 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root_layout = QVBoxLayout(central)
-        root_layout.setSpacing(12)
-        root_layout.setContentsMargins(18, 16, 18, 16)
+        root_layout.setSpacing(10)
+        root_layout.setContentsMargins(16, 14, 16, 14)
 
         # 1. Header Row
         header_layout = QHBoxLayout()
-        title_label = QLabel("Eco Video Upscaler")
+        title_label = QLabel("Eco Video Upscaler & Subtitle Studio")
         title_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         self.status_badge = QLabel("Sẵn sàng")
         self.status_badge.setStyleSheet("color: #10b981; font-weight: 500;")
@@ -212,7 +287,28 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(self.status_badge)
         root_layout.addLayout(header_layout)
 
-        # 2. File Selection Panel
+        # 2. Main Tabs
+        self.tabs = QTabWidget()
+        upscale_tab = self._build_upscale_tab()
+        subtitle_tab = self._build_subtitle_tab()
+        self.tabs.addTab(upscale_tab, "⚡ Nâng cấp Video (Upscale)")
+        self.tabs.addTab(subtitle_tab, "📝 Phụ đề tự động (Subtitle)")
+        root_layout.addWidget(self.tabs)
+
+        # 3. Real-time Console Log Box
+        self.log_box = QTextEdit()
+        self.log_box.setReadOnly(True)
+        self.log_box.setFixedHeight(100)
+        self.log_box.append("[Hệ thống] Giao diện Eco Video Upscaler & Subtitle Studio đã sẵn sàng.")
+        root_layout.addWidget(self.log_box)
+
+    def _build_upscale_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setSpacing(10)
+        layout.setContentsMargins(8, 10, 8, 8)
+
+        # File Selection Panel
         file_box = QWidget()
         file_box.setStyleSheet("background-color: #202023; border: 1px solid #2e2e33; border-radius: 6px; padding: 6px;")
         file_layout = QGridLayout(file_box)
@@ -238,21 +334,18 @@ class MainWindow(QMainWindow):
         self.meta_label = QLabel("Chưa chọn video")
         self.meta_label.setStyleSheet("color: #71717a; font-family: monospace; font-size: 11px;")
         file_layout.addWidget(self.meta_label, 2, 1, 1, 2)
+        layout.addWidget(file_box)
 
-        root_layout.addWidget(file_box)
-
-        # 3. Settings Panel
+        # Settings Panel
         settings_box = QWidget()
         settings_box.setStyleSheet("background-color: #202023; border: 1px solid #2e2e33; border-radius: 6px; padding: 6px;")
         set_layout = QVBoxLayout(settings_box)
         set_layout.setContentsMargins(10, 10, 10, 10)
-        set_layout.setSpacing(10)
+        set_layout.setSpacing(8)
 
-        # Dropdowns row
         dropdown_row = QHBoxLayout()
-        dropdown_row.setSpacing(12)
+        dropdown_row.setSpacing(10)
 
-        # Model
         m_col = QVBoxLayout()
         m_col.addWidget(QLabel("Mô hình AI:"))
         self.model_combo = QComboBox()
@@ -266,7 +359,6 @@ class MainWindow(QMainWindow):
         m_col.addWidget(self.model_combo)
         dropdown_row.addLayout(m_col)
 
-        # Scale
         s_col = QVBoxLayout()
         s_col.addWidget(QLabel("Độ phân giải đích:"))
         self.scale_combo = QComboBox()
@@ -278,9 +370,8 @@ class MainWindow(QMainWindow):
         s_col.addWidget(self.scale_combo)
         dropdown_row.addLayout(s_col)
 
-        # Encoder
         e_col = QVBoxLayout()
-        e_col.addWidget(QLabel("Bộ mã hóa (Encoder):"))
+        e_col.addWidget(QLabel("Bộ mã hóa:"))
         self.encoder_combo = QComboBox()
         self.encoder_combo.addItems([
             "NVIDIA NVENC H.264 (Phần cứng)",
@@ -290,9 +381,8 @@ class MainWindow(QMainWindow):
         e_col.addWidget(self.encoder_combo)
         dropdown_row.addLayout(e_col)
 
-        # Tile size
         t_col = QVBoxLayout()
-        t_col.addWidget(QLabel("Chia Tile (Tốc độ):"))
+        t_col.addWidget(QLabel("Chia Tile:"))
         self.tile_combo = QComboBox()
         self.tile_combo.addItems([
             "256x256 (Mát máy / Tiết kiệm VRAM)",
@@ -301,128 +391,105 @@ class MainWindow(QMainWindow):
         ])
         t_col.addWidget(self.tile_combo)
         dropdown_row.addLayout(t_col)
-
         set_layout.addLayout(dropdown_row)
 
-        # Checkboxes row
         chk_row = QHBoxLayout()
-        self.thermal_chk = QCheckBox("Kiểm soát nhiệt độ: Giữ dưới")
+        self.thermal_chk = QCheckBox("Kiểm soát nhiệt độ:")
         self.thermal_chk.setChecked(True)
         self.temp_spin = QSpinBox()
         self.temp_spin.setRange(50, 90)
         self.temp_spin.setValue(70)
         self.temp_spin.setSuffix(" °C")
 
-        self.dedup_chk = QCheckBox("Bỏ qua khung hình trùng (Dedup)")
+        self.dedup_chk = QCheckBox("Bỏ qua khung trùng")
         self.dedup_chk.setChecked(True)
-
-        self.checkpoint_chk = QCheckBox("Lưu checkpoint định kỳ (Resume)")
+        self.checkpoint_chk = QCheckBox("Lưu checkpoint định kỳ")
         self.checkpoint_chk.setChecked(True)
 
         chk_row.addWidget(self.thermal_chk)
         chk_row.addWidget(self.temp_spin)
-        chk_row.addSpacing(16)
+        chk_row.addSpacing(14)
         chk_row.addWidget(self.dedup_chk)
-        chk_row.addSpacing(16)
+        chk_row.addSpacing(14)
         chk_row.addWidget(self.checkpoint_chk)
         chk_row.addStretch()
-
         set_layout.addLayout(chk_row)
 
-        # Realism & Artifact Control Row
         realism_row = QHBoxLayout()
-        realism_row.setSpacing(14)
+        realism_row.setSpacing(12)
 
-        # Pre-Denoise
         d_box = QHBoxLayout()
-        d_box.addWidget(QLabel("Khử nhiễu gốc (Pre-Denoise):"))
+        d_box.addWidget(QLabel("Khử nhiễu:"))
         self.pre_denoise_spin = QSpinBox()
         self.pre_denoise_spin.setRange(0, 100)
         self.pre_denoise_spin.setValue(30)
         self.pre_denoise_spin.setSuffix(" %")
-        self.pre_denoise_spin.setToolTip("Lọc sạch hạt nhiễu nén trước khi AI xử lý, ngăn chặn AI khuếch đại hạt rác và vẽ bậy")
         d_box.addWidget(self.pre_denoise_spin)
         realism_row.addLayout(d_box)
 
-        # Recover Original Detail
         r_box = QHBoxLayout()
-        r_box.addWidget(QLabel("Khôi phục gốc (Recover):"))
+        r_box.addWidget(QLabel("Khôi phục:"))
         self.recover_spin = QSpinBox()
         self.recover_spin.setRange(0, 50)
         self.recover_spin.setValue(20)
         self.recover_spin.setSuffix(" %")
-        self.recover_spin.setToolTip("Trộn texture video gốc để xóa bỏ hiện tượng AI vẽ bậy hoa văn lạ hoặc bệt môi/da tượng sáp")
         r_box.addWidget(self.recover_spin)
         realism_row.addLayout(r_box)
 
-        # Sharpening
         s_box = QHBoxLayout()
-        s_box.addWidget(QLabel("Làm nét viền (Sharpen):"))
+        s_box.addWidget(QLabel("Làm nét:"))
         self.sharpen_spin = QSpinBox()
         self.sharpen_spin.setRange(0, 100)
         self.sharpen_spin.setValue(20)
         self.sharpen_spin.setSuffix(" %")
-        self.sharpen_spin.setToolTip("Tăng độ tương phản cạnh giúp viền rõ ràng, khử mờ nhòe")
         s_box.addWidget(self.sharpen_spin)
         realism_row.addLayout(s_box)
 
-        # Film Grain
-        g_box = QHBoxLayout()
-        self.grain_chk = QCheckBox("Bù hạt tự nhiên (Film Grain)")
+        self.grain_chk = QCheckBox("Bù hạt (Grain)")
         self.grain_chk.setChecked(True)
-        self.grain_chk.setToolTip("Phủ lớp hạt vi mô tự nhiên giúp da và môi sống động như quay máy ảnh thật, khử cảm giác búp bê nhựa")
-        g_box.addWidget(self.grain_chk)
-        realism_row.addLayout(g_box)
-
+        realism_row.addWidget(self.grain_chk)
         realism_row.addStretch()
         set_layout.addLayout(realism_row)
+        layout.addWidget(settings_box)
 
-        root_layout.addWidget(settings_box)
-
-        # 4. Hardware Monitor Box
+        # Hardware Monitor Box
         hw_box = QWidget()
         hw_box.setStyleSheet("background-color: #202023; border: 1px solid #2e2e33; border-radius: 6px;")
         hw_layout = QGridLayout(hw_box)
-        hw_layout.setContentsMargins(12, 10, 12, 10)
+        hw_layout.setContentsMargins(10, 8, 10, 8)
 
-        # Col 0: Temp
         hw_layout.addWidget(QLabel("Nhiệt độ GPU"), 0, 0, Qt.AlignmentFlag.AlignCenter)
         self.val_temp = QLabel("-- °C")
-        self.val_temp.setFont(QFont("Consolas", 14, QFont.Weight.Bold))
+        self.val_temp.setFont(QFont("Consolas", 13, QFont.Weight.Bold))
         self.val_temp.setStyleSheet("color: #10b981;")
         hw_layout.addWidget(self.val_temp, 1, 0, Qt.AlignmentFlag.AlignCenter)
 
-        # Col 1: Power
-        hw_layout.addWidget(QLabel("Công suất TDP"), 0, 1, Qt.AlignmentFlag.AlignCenter)
+        hw_layout.addWidget(QLabel("Công suất"), 0, 1, Qt.AlignmentFlag.AlignCenter)
         self.val_power = QLabel("-- W")
-        self.val_power.setFont(QFont("Consolas", 14, QFont.Weight.Bold))
+        self.val_power.setFont(QFont("Consolas", 13, QFont.Weight.Bold))
         self.val_power.setStyleSheet("color: #3b82f6;")
         hw_layout.addWidget(self.val_power, 1, 1, Qt.AlignmentFlag.AlignCenter)
 
-        # Col 2: VRAM
         hw_layout.addWidget(QLabel("VRAM sử dụng"), 0, 2, Qt.AlignmentFlag.AlignCenter)
         self.val_vram = QLabel("-- / 4.0 GB")
-        self.val_vram.setFont(QFont("Consolas", 14, QFont.Weight.Bold))
+        self.val_vram.setFont(QFont("Consolas", 13, QFont.Weight.Bold))
         self.val_vram.setStyleSheet("color: #e4e4e7;")
         hw_layout.addWidget(self.val_vram, 1, 2, Qt.AlignmentFlag.AlignCenter)
 
-        # Col 3: Dedup
         hw_layout.addWidget(QLabel("Khung trùng bỏ qua"), 0, 3, Qt.AlignmentFlag.AlignCenter)
         self.val_dedup = QLabel("0 (0.0%)")
-        self.val_dedup.setFont(QFont("Consolas", 14, QFont.Weight.Bold))
+        self.val_dedup.setFont(QFont("Consolas", 13, QFont.Weight.Bold))
         self.val_dedup.setStyleSheet("color: #a855f7;")
         hw_layout.addWidget(self.val_dedup, 1, 3, Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(hw_box)
 
-        root_layout.addWidget(hw_box)
-
-        # 5. Progress & Action Buttons
+        # Progress Box
         prog_box = QWidget()
         prog_box.setStyleSheet("background-color: #202023; border: 1px solid #2e2e33; border-radius: 6px;")
         prog_layout = QVBoxLayout(prog_box)
-        prog_layout.setContentsMargins(12, 12, 12, 12)
-        prog_layout.setSpacing(8)
+        prog_layout.setContentsMargins(10, 10, 10, 10)
+        prog_layout.setSpacing(6)
 
-        # Stats line
         stats_line = QHBoxLayout()
         self.prog_text = QLabel("Tiến độ: 0% (0 / 0 khung)")
         self.prog_speed = QLabel("Tốc độ: -- fps • Còn lại: --:--")
@@ -432,15 +499,13 @@ class MainWindow(QMainWindow):
         stats_line.addWidget(self.prog_speed)
         prog_layout.addLayout(stats_line)
 
-        # Bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         prog_layout.addWidget(self.progress_bar)
 
-        # Buttons
         btn_line = QHBoxLayout()
-        self.start_btn = QPushButton("Bắt đầu")
+        self.start_btn = QPushButton("Bắt đầu Upscale")
         self.start_btn.setObjectName("primaryBtn")
         self.start_btn.clicked.connect(self._start_pipeline)
         btn_line.addWidget(self.start_btn)
@@ -457,20 +522,175 @@ class MainWindow(QMainWindow):
         btn_line.addWidget(self.cancel_btn)
 
         btn_line.addStretch()
-
         open_folder_btn = QPushButton("Mở thư mục")
         open_folder_btn.clicked.connect(self._open_output_folder)
         btn_line.addWidget(open_folder_btn)
-
         prog_layout.addLayout(btn_line)
-        root_layout.addWidget(prog_box)
+        layout.addWidget(prog_box)
 
-        # 6. Real-time Console Log Box
-        self.log_box = QTextEdit()
-        self.log_box.setReadOnly(True)
-        self.log_box.setFixedHeight(110)
-        self.log_box.append("[Hệ thống] Giao diện Eco Video Upscaler đã sẵn sàng.")
-        root_layout.addWidget(self.log_box)
+        return tab
+
+    def _build_subtitle_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setSpacing(10)
+        layout.setContentsMargins(8, 10, 8, 8)
+
+        # File box
+        file_box = QWidget()
+        file_box.setStyleSheet("background-color: #202023; border: 1px solid #2e2e33; border-radius: 6px; padding: 6px;")
+        file_layout = QGridLayout(file_box)
+        file_layout.setContentsMargins(10, 10, 10, 10)
+        file_layout.setSpacing(8)
+
+        file_layout.addWidget(QLabel("Video nguồn:"), 0, 0)
+        self.sub_input_edit = QLineEdit()
+        self.sub_input_edit.setPlaceholderText("Chọn video cần tạo phụ đề (.mp4, .mkv, .mov)...")
+        file_layout.addWidget(self.sub_input_edit, 0, 1)
+        browse_in_btn = QPushButton("Chọn...")
+        browse_in_btn.clicked.connect(self._browse_sub_input)
+        file_layout.addWidget(browse_in_btn, 0, 2)
+
+        file_layout.addWidget(QLabel("Video ra (MP4):"), 1, 0)
+        self.sub_output_edit = QLineEdit()
+        self.sub_output_edit.setPlaceholderText("Đường dẫn lưu video có phụ đề...")
+        file_layout.addWidget(self.sub_output_edit, 1, 1)
+        browse_out_btn = QPushButton("Lưu tại...")
+        browse_out_btn.clicked.connect(self._browse_sub_output)
+        file_layout.addWidget(browse_out_btn, 1, 2)
+
+        self.sub_meta_label = QLabel("Chưa chọn video")
+        self.sub_meta_label.setStyleSheet("color: #71717a; font-family: monospace; font-size: 11px;")
+        file_layout.addWidget(self.sub_meta_label, 2, 1, 1, 2)
+        layout.addWidget(file_box)
+
+        # Settings box
+        settings_box = QWidget()
+        settings_box.setStyleSheet("background-color: #202023; border: 1px solid #2e2e33; border-radius: 6px; padding: 6px;")
+        set_layout = QVBoxLayout(settings_box)
+        set_layout.setContentsMargins(10, 10, 10, 10)
+        set_layout.setSpacing(8)
+
+        row1 = QHBoxLayout()
+        row1.setSpacing(10)
+
+        s_col = QVBoxLayout()
+        s_col.addWidget(QLabel("Ngôn ngữ nguồn:"))
+        self.sub_lang_combo = QComboBox()
+        self.sub_lang_combo.addItems([
+            "auto (Tự động nhận diện)",
+            "en (Tiếng Anh)",
+            "zh (Tiếng Trung)",
+            "ja (Tiếng Nhật)",
+            "ko (Tiếng Hàn)",
+            "vi (Tiếng Việt)",
+            "fr (Tiếng Pháp)",
+            "de (Tiếng Đức)",
+            "ru (Tiếng Nga)",
+            "th (Tiếng Thái)",
+        ])
+        s_col.addWidget(self.sub_lang_combo)
+        row1.addLayout(s_col)
+
+        w_col = QVBoxLayout()
+        w_col.addWidget(QLabel("Mô hình Whisper ASR:"))
+        self.sub_whisper_combo = QComboBox()
+        self.sub_whisper_combo.addItems([
+            "large-v3 (Độ chính xác cao nhất - Khuyên dùng)",
+            "medium",
+            "small",
+            "base",
+        ])
+        w_col.addWidget(self.sub_whisper_combo)
+        row1.addLayout(w_col)
+
+        g_col = QVBoxLayout()
+        g_col.addWidget(QLabel("Mô hình Dịch (Gemini):"))
+        self.sub_gemini_combo = QComboBox()
+        self.sub_gemini_combo.addItems([
+            "gemini-3.1-flash-lite (Nhanh & Tối ưu chi phí)",
+            "gemini-3.5-flash-lite",
+            "gemini-2.5-flash-lite",
+            "gemini-3.5-flash",
+        ])
+        g_col.addWidget(self.sub_gemini_combo)
+        row1.addLayout(g_col)
+        set_layout.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        row2.setSpacing(10)
+
+        k_col = QVBoxLayout()
+        k_col.addWidget(QLabel("Khóa Gemini API (hoặc biến GEMINI_API_KEY):"))
+        self.sub_api_key_edit = QLineEdit()
+        self.sub_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.sub_api_key_edit.setPlaceholderText("Nhập khóa API (để trống nếu đã có biến môi trường)...")
+        k_col.addWidget(self.sub_api_key_edit)
+        row2.addLayout(k_col)
+
+        f_col = QVBoxLayout()
+        f_col.addWidget(QLabel("Phông chữ hiển thị:"))
+        self.sub_font_edit = QLineEdit("Noto Sans")
+        self.sub_font_edit.setPlaceholderText("Noto Sans / Arial / Segoe UI...")
+        f_col.addWidget(self.sub_font_edit)
+        row2.addLayout(f_col)
+        set_layout.addLayout(row2)
+
+        c_col = QVBoxLayout()
+        c_col.addWidget(QLabel("Ghi chú ngữ cảnh dịch thuật (Xưng hô anh/em/tôi, bối cảnh phim):"))
+        self.sub_context_edit = QLineEdit()
+        self.sub_context_edit.setPlaceholderText("Ví dụ: Xưng hô anh/em thân mật; bối cảnh công nghệ thông tin...")
+        c_col.addWidget(self.sub_context_edit)
+        set_layout.addLayout(c_col)
+
+        chk_row = QHBoxLayout()
+        self.sub_burn_chk = QCheckBox("Ghép cứng phụ đề vào video (Burn-in MP4)")
+        self.sub_burn_chk.setChecked(True)
+        self.sub_bilingual_chk = QCheckBox("Hiển thị song ngữ (Gốc ở trên, dịch ở dưới)")
+        self.sub_bilingual_chk.setChecked(False)
+        chk_row.addWidget(self.sub_burn_chk)
+        chk_row.addSpacing(20)
+        chk_row.addWidget(self.sub_bilingual_chk)
+        chk_row.addStretch()
+        set_layout.addLayout(chk_row)
+        layout.addWidget(settings_box)
+
+        # Progress Box
+        prog_box = QWidget()
+        prog_box.setStyleSheet("background-color: #202023; border: 1px solid #2e2e33; border-radius: 6px;")
+        prog_layout = QVBoxLayout(prog_box)
+        prog_layout.setContentsMargins(10, 10, 10, 10)
+        prog_layout.setSpacing(6)
+
+        self.sub_prog_text = QLabel("Tiến độ: Sẵn sàng")
+        prog_layout.addWidget(self.sub_prog_text)
+
+        self.sub_progress_bar = QProgressBar()
+        self.sub_progress_bar.setRange(0, 100)
+        self.sub_progress_bar.setValue(0)
+        prog_layout.addWidget(self.sub_progress_bar)
+
+        btn_line = QHBoxLayout()
+        self.sub_start_btn = QPushButton("Bắt đầu tạo Phụ đề")
+        self.sub_start_btn.setObjectName("primaryBtn")
+        self.sub_start_btn.clicked.connect(self._start_subtitle)
+        btn_line.addWidget(self.sub_start_btn)
+
+        self.sub_cancel_btn = QPushButton("Hủy")
+        self.sub_cancel_btn.setObjectName("dangerBtn")
+        self.sub_cancel_btn.setEnabled(False)
+        self.sub_cancel_btn.clicked.connect(self._cancel_subtitle)
+        btn_line.addWidget(self.sub_cancel_btn)
+
+        btn_line.addStretch()
+        open_sub_folder_btn = QPushButton("Mở thư mục")
+        open_sub_folder_btn.clicked.connect(self._open_sub_folder)
+        btn_line.addWidget(open_sub_folder_btn)
+        prog_layout.addLayout(btn_line)
+        layout.addWidget(prog_box)
+
+        layout.addStretch()
+        return tab
 
     def _init_hardware_info(self):
         """Read initial hardware telemetry."""
@@ -483,6 +703,7 @@ class MainWindow(QMainWindow):
             self.val_vram.setText(f"0.0 / {total_gb} GB")
             self.log_box.append(f"[Phần cứng] Phát hiện {gpu['name']} ({total_gb} GB VRAM).")
 
+    # ================= UPSCALE EVENT HANDLERS =================
     def _browse_input(self):
         file, _ = QFileDialog.getOpenFileName(
             self, "Chọn Video Nguồn", "", "Video Files (*.mp4 *.mkv *.avi *.mov *.webm)"
@@ -494,7 +715,6 @@ class MainWindow(QMainWindow):
                 self.meta_label.setText(
                     f"Gốc: {self.meta.width}x{self.meta.height} • {self.meta.fps:.2f} fps • Audio: {'Có' if self.meta.has_audio else 'Không'} • {self.meta.total_frames} khung"
                 )
-                # Auto set output path
                 p = Path(file)
                 default_out = str(p.parent / f"{p.stem}_upscaled{p.suffix}")
                 self.output_edit.setText(default_out)
@@ -662,6 +882,115 @@ class MainWindow(QMainWindow):
 
     def _open_output_folder(self):
         out_file = self.output_edit.text().strip()
+        folder = Path(out_file).parent if out_file else Path.cwd()
+        if folder.exists():
+            os.startfile(folder)
+
+    # ================= SUBTITLE EVENT HANDLERS =================
+    def _browse_sub_input(self):
+        file, _ = QFileDialog.getOpenFileName(
+            self, "Chọn Video Cần Tạo Phụ Đề", "", "Video Files (*.mp4 *.mkv *.avi *.mov *.webm)"
+        )
+        if file:
+            self.sub_input_edit.setText(file)
+            try:
+                self.sub_meta = get_video_metadata(file)
+                self.sub_meta_label.setText(
+                    f"Gốc: {self.sub_meta.width}x{self.sub_meta.height} • Audio: {'Có' if self.sub_meta.has_audio else 'Không'} • {self.sub_meta.duration_sec:.1f}s"
+                )
+                p = Path(file)
+                default_out = str(p.parent / f"{p.stem}_sub{p.suffix}")
+                self.sub_output_edit.setText(default_out)
+            except Exception as e:
+                self.sub_meta_label.setText(f"Lỗi đọc metadata: {e}")
+
+    def _browse_sub_output(self):
+        file, _ = QFileDialog.getSaveFileName(
+            self, "Lưu Video Phụ Đề", self.sub_output_edit.text() or "", "MP4 Video (*.mp4)"
+        )
+        if file:
+            self.sub_output_edit.setText(file)
+
+    def _start_subtitle(self):
+        in_file = self.sub_input_edit.text().strip()
+        out_file = self.sub_output_edit.text().strip()
+
+        if not in_file or not os.path.exists(in_file):
+            QMessageBox.warning(self, "Lỗi", "Vui lòng chọn video đầu vào hợp lệ.")
+            return
+
+        api_key = self.sub_api_key_edit.text().strip()
+        if api_key:
+            os.environ["GEMINI_API_KEY"] = api_key
+
+        from ecoup.subtitle.config import SubtitleConfig
+
+        cfg = SubtitleConfig()
+        lang_text = self.sub_lang_combo.currentText()
+        if "auto" in lang_text.lower():
+            cfg.asr.language = None
+        else:
+            cfg.asr.language = lang_text.split()[0].strip()
+
+        cfg.asr.model = self.sub_whisper_combo.currentText().split()[0].strip()
+        cfg.translate.model = self.sub_gemini_combo.currentText().split()[0].strip()
+        cfg.translate.context_note = self.sub_context_edit.text().strip()
+        cfg.burn_in = self.sub_burn_chk.isChecked()
+        cfg.burn.show_original = self.sub_bilingual_chk.isChecked()
+        if self.sub_font_edit.text().strip():
+            cfg.burn.font_name = self.sub_font_edit.text().strip()
+
+        out_dir = str(Path(out_file).parent if out_file else Path(in_file).parent)
+        cfg.translate.cache_dir = str(Path(out_dir) / "sub_cache")
+
+        self.sub_start_btn.setEnabled(False)
+        self.sub_cancel_btn.setEnabled(True)
+        self.status_badge.setText("Đang tạo phụ đề")
+        self.status_badge.setStyleSheet("color: #3b82f6; font-weight: 500;")
+
+        self.sub_worker = SubtitleWorker(config=cfg, input_path=in_file, output_path=out_file, out_dir=out_dir)
+        self.sub_worker.progress_sig.connect(self._on_sub_worker_progress)
+        self.sub_worker.log_sig.connect(self.log_box.append)
+        self.sub_worker.finished_sig.connect(self._on_sub_worker_finished)
+        self.sub_worker.start()
+
+    def _on_sub_worker_progress(self, step: str, frac: float):
+        step_names = {
+            "audio": ("Tách âm thanh", 15),
+            "asr": ("Nhận dạng giọng nói Whisper", 45),
+            "normalize": ("Chuẩn hóa mốc thời gian", 55),
+            "translate": ("Dịch tiếng Việt Gemini", 80),
+            "srt": ("Xuất tệp phụ đề SRT", 85),
+            "burn": ("Ghép cứng video (FFmpeg libass)", 95),
+        }
+        name, pct = step_names.get(step, (step, int(frac * 100)))
+        self.sub_progress_bar.setValue(pct)
+        self.sub_prog_text.setText(f"Tiến độ ({name}): {pct}%")
+
+    def _on_sub_worker_finished(self, success: bool, rep, message: str):
+        self.sub_start_btn.setEnabled(True)
+        self.sub_cancel_btn.setEnabled(False)
+        self.status_badge.setText("Sẵn sàng")
+        self.status_badge.setStyleSheet("color: #10b981; font-weight: 500;")
+        self.sub_progress_bar.setValue(100 if success else 0)
+
+        if success:
+            self.log_box.append(f"[Phụ đề thành công] {message}")
+            if rep and getattr(rep, "outputs", None):
+                for k, v in rep.outputs.items():
+                    self.log_box.append(f"  -> {k}: {v}")
+            QMessageBox.information(self, "Thành công", message)
+        else:
+            self.log_box.append(f"[Phụ đề lỗi] {message}")
+            QMessageBox.critical(self, "Lỗi tạo phụ đề", message)
+
+    def _cancel_subtitle(self):
+        if self.sub_worker:
+            self.sub_worker.cancel()
+            self.log_box.append("[Hệ thống] Đang yêu cầu hủy tiến trình phụ đề...")
+
+    def _open_sub_folder(self):
+        out_file = self.sub_output_edit.text().strip()
         folder = Path(out_file).parent if out_file else Path.cwd()
         if folder.exists():
             os.startfile(folder)

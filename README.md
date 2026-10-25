@@ -17,6 +17,7 @@ Hệ thống AI Super-Resolution cho Video tiết kiệm VRAM và kiểm soát n
 - **Thermal Governor (Kiểm soát nhiệt tự động)**: Tự động điều tiết tốc độ (dynamic micro-sleeps) khi GPU chạm ngưỡng nhiệt mong muốn (mặc định 70°C), tự động tạm dừng an toàn nếu quá nhiệt và khôi phục khi máy nguội.
 - **Checkpoint & Resume theo phân đoạn**: Tự động lưu tiến độ định kỳ (mặc định mỗi 300 khung) vào file `state.json`. Khi bị ngắt quãng (hoặc Colab timeout), hệ thống tiếp tục xử lý chính xác từ khung gián đoạn mà không làm mất thời gian hay lệch tiếng.
 - **NVENC Hardware Acceleration**: Tận dụng nhân mã hóa phần cứng của card đồ họa NVIDIA để xuất video thành phẩm tốc độ cao.
+- **Tạo & Gắn phụ đề tự động (Subtitle Pipeline - Whisper + Gemini)**: Tự động trích xuất âm thanh, nhận diện tiếng nói đa ngôn ngữ siêu tốc bằng `faster-whisper` (hỗ trợ `large-v3`, `medium`, `small`, `base` trên CUDA/CPU), dịch thuật ngữ cảnh tự nhiên bằng Google Gemini (`gemini-2.5-flash` / `gemini-3.1-flash-lite`), tự động ngắt dòng thông minh (CPL ≤ 42, CPS ≤ 17), xuất phụ đề chuẩn `.srt` / `.ass` (kèm Noto Sans/Arial styling) và burn-in trực tiếp vào video bằng FFmpeg `libass`. Tự động giải phóng 100% VRAM ngay sau ASR để không xung đột với mô hình upscale.
 
 ---
 
@@ -54,8 +55,21 @@ Hệ thống AI Super-Resolution cho Video tiết kiệm VRAM và kiểm soát n
 # Kích hoạt virtualenv
 .\.venv\Scripts\Activate.ps1
 
-# Cài đặt gói ecoup ở chế độ editable
+# Cài đặt gói ecoup cơ bản (cho upscale)
 pip install -e .
+
+# Hoặc cài đặt đầy đủ kèm tính năng Phụ đề tự động (faster-whisper, google-genai, pysubs2...)
+pip install -e ".[subtitle]"
+```
+
+### Thiết lập API Key cho Dịch thuật (Gemini)
+Để sử dụng tính năng dịch phụ đề tự động bằng Google Gemini, thiết lập biến môi trường `GEMINI_API_KEY`:
+```powershell
+# Trên Windows PowerShell
+$env:GEMINI_API_KEY="AIzaSy..."
+
+# Trên Linux / macOS / Google Colab
+export GEMINI_API_KEY="AIzaSy..."
 ```
 
 ### Kiểm tra chẩn đoán hệ thống
@@ -72,15 +86,19 @@ Chạy ứng dụng Gradio tương thích hoàn toàn với Google Colab, hỗ t
 ```bash
 python colab_app.py --share
 ```
-*Giao diện cung cấp đầy đủ các thanh trượt điều chỉnh: Denoise, Detail Recovery, Sharpen, Film Grain, lựa chọn mô hình SeedVR2/CCSR/NomosUni, và nút Hủy an toàn.*
+*Giao diện tích hợp 2 tab chuyên biệt:*
+- **⚡ Phục chế & Siêu phân giải (Upscale AI)**: Đầy đủ các thanh trượt điều chỉnh: Denoise, Detail Recovery, Sharpen, Film Grain, lựa chọn mô hình SeedVR2/CCSR/NomosUni, và nút Hủy an toàn.
+- **📝 Phụ đề tự động (Whisper + Gemini)**: Nhận diện tiếng nói tự động, dịch ngữ cảnh sang tiếng Việt (hoặc ngôn ngữ tùy chọn), xuất file `.srt`, `.ass` và video đã burn-in phụ đề chuẩn Noto Sans.
 
 ### 4.2. Giao diện Desktop (PyQt6)
-Dành cho máy tính cá nhân cục bộ:
+Dành cho máy tính cá nhân cục bộ, tích hợp cả 2 tab Upscale và Subtitle với luồng worker nền không gây đơ UI:
 ```powershell
 python -m gui.main_window
 ```
 
 ### 4.3. Dòng lệnh (CLI)
+
+#### Phục chế & Siêu phân giải (Upscale)
 ```powershell
 # Upscale video cơ bản (mặc định 2x)
 python -m ecoup.cli run -i input.mp4 -o output.mp4
@@ -90,6 +108,18 @@ python -m ecoup.cli run -i input.mp4 -o output.mp4 --scale 4
 
 # Tiếp tục tác vụ bị gián đoạn từ checkpoint
 python -m ecoup.cli run -i input.mp4 -o output.mp4 --resume
+```
+
+#### Tạo & Gắn phụ đề tự động (Subtitle)
+```powershell
+# Nhận diện tiếng nói, dịch sang tiếng Việt và burn-in vào video (mặc định)
+python -m ecoup.cli subtitle -i video.mp4 -o video_sub.mp4 --target-lang vi --burn
+
+# Chỉ nhận diện và xuất file SRT gốc (bỏ qua dịch thuật và burn-in)
+python -m ecoup.cli subtitle -i video.mp4 --no-translate --no-burn
+
+# Tùy chọn model Whisper (medium/large-v3) và font chữ
+python -m ecoup.cli subtitle -i video.mp4 -o video_sub.mp4 --whisper-model medium --font-name "Noto Sans" --font-size 22
 ```
 
 ---
@@ -109,10 +139,15 @@ python scripts/download_ccsr.py
 ## 6. Đánh giá & Kiểm thử (Evaluation & Tests)
 
 ### Chạy toàn bộ bộ kiểm thử tự động
-Toàn bộ 32 test cases kiểm tra video I/O, tiling, blending, dedup, checkpoint, clip chunking, và pipeline:
+Toàn bộ 61 test cases kiểm tra video I/O, tiling, blending, dedup, checkpoint, clip chunking, pipeline upscale, trích xuất âm thanh, Whisper ASR, ngắt dòng phụ đề CPL/CPS, biên dịch SRT/ASS, bản dịch mock Gemini, và burn-in libass:
 ```powershell
 pytest -v
 ```
+
+### Điểm chuẩn tốc độ (Benchmarks)
+Xem báo cáo chi tiết và số liệu thực nghiệm tại [`docs/benchmark.md`](file:///docs/benchmark.md):
+- Phần 1 – 4: Đo kiểm VRAM, FPS và nhiệt độ cho các mô hình Upscale (SeedVR2, CCSR, NomosUni).
+- Phần 5: Đo kiểm hiệu năng Pipeline Phụ đề đa ngôn ngữ (English, Chinese, Japanese, Korean, Vietnamese) trên Tesla T4 Colab (tốc độ tổng thể nhanh gấp 1.3x – 5.0x thời gian thực của video).
 
 ### Đánh giá so sánh đa mô hình (Side-by-Side Face Zoom & Full Frame)
 ```powershell
