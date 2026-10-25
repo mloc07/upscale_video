@@ -21,6 +21,19 @@ class AsrResult:
     peak_vram_gb: Optional[float] = None
 
 
+def _load_wav_float32(path):
+    """Read a 16-bit PCM mono WAV into a float32 numpy array in [-1, 1]."""
+    import wave
+
+    import numpy as np
+
+    with wave.open(str(path), "rb") as wf:
+        if wf.getsampwidth() != 2:
+            raise ValueError("Expected 16-bit PCM WAV.")
+        raw = wf.readframes(wf.getnframes())
+    return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+
+
 class AsrBackend(Protocol):
     def transcribe(self, wav_path: str, cfg: AsrConfig,
                    on_segment: Optional[Callable[[float], None]] = None,
@@ -61,7 +74,9 @@ class FasterWhisperBackend:
             )
             if cfg.vad_filter:
                 kwargs["vad_parameters"] = dict(min_silence_duration_ms=cfg.vad_min_silence_ms)
-            seg_iter, info = model.transcribe(str(wav_path), **kwargs)
+            # Feed a float32 array (our own 16 kHz mono WAV) so faster-whisper never needs PyAV to decode;
+            # this avoids PyAV/faster-whisper version mismatches seen on Colab.
+            seg_iter, info = model.transcribe(_load_wav_float32(wav_path), **kwargs)
             segs: list[Segment] = []
             for s in seg_iter:  # lazy generator: honour cancellation between segments
                 if should_cancel and should_cancel():

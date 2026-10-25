@@ -25,6 +25,8 @@ wheels/
 .venv/
 venv/
 ENV/
+.env
+.env.*
 
 # Testing & Type checking
 .pytest_cache/
