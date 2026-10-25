@@ -256,10 +256,59 @@ def main(args: Optional[list[str]] = None) -> int:
     run_parser.add_argument("--scale", type=int, help="Output target scale factor")
     run_parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint")
 
+    # subtitle command
+    sub_parser = subparsers.add_parser("subtitle", help="Auto subtitles: Whisper -> Gemini translation -> burn-in")
+    sub_parser.add_argument("-i", "--input", required=True, help="Path to input video")
+    sub_parser.add_argument("-o", "--output", help="Output video path (default: <input>_sub.mp4)")
+    sub_parser.add_argument("--out-dir", help="Directory for .srt/.ass/report files (default: next to output)")
+    sub_parser.add_argument("--lang", default="auto", help="Source language code or 'auto'")
+    sub_parser.add_argument("--target", default="vi", help="Target language code (default: vi)")
+    sub_parser.add_argument("--whisper-model", default="large-v3")
+    sub_parser.add_argument("--translate-model", default=None, help="Gemini model id (default from config)")
+    sub_parser.add_argument("--context-note", default="", help="Free-form context for the translator")
+    sub_parser.add_argument("--glossary", default=None, help="JSON file {\"term\": \"translation\"}")
+    sub_parser.add_argument("--no-burn", action="store_true", help="Only write .srt files, do not burn into video")
+    sub_parser.add_argument("--show-original", action="store_true", help="Show source text above the translation")
+    sub_parser.add_argument("--font", default=None, help="Font family for burn-in (must support Vietnamese)")
+    sub_parser.add_argument("--cache-dir", default=None, help="Translation cache directory (enables resume)")
+
     parsed = parser.parse_args(args)
 
     if parsed.command == "doctor":
         return run_doctor()
+    elif parsed.command == "subtitle":
+        import json
+        from pathlib import Path
+        from ecoup.subtitle.config import SubtitleConfig
+        from ecoup.subtitle.pipeline import SubtitlePipeline
+
+        cfg = SubtitleConfig()
+        cfg.asr.model = parsed.whisper_model
+        cfg.asr.language = None if parsed.lang == "auto" else parsed.lang
+        cfg.translate.target_language = parsed.target
+        if parsed.translate_model:
+            cfg.translate.model = parsed.translate_model
+        cfg.translate.context_note = parsed.context_note
+        cfg.translate.cache_dir = parsed.cache_dir
+        if parsed.glossary:
+            cfg.translate.glossary = json.loads(Path(parsed.glossary).read_text(encoding="utf-8"))
+        cfg.burn_in = not parsed.no_burn
+        cfg.burn.show_original = parsed.show_original
+        if parsed.font:
+            cfg.burn.font_name = parsed.font
+
+        def _on_progress(step: str, frac: float) -> None:
+            print(f"[subtitle] {step}: {int(frac * 100)}%", flush=True)
+
+        pipe = SubtitlePipeline(cfg, on_progress=_on_progress)
+        try:
+            rep = pipe.run(parsed.input, output=parsed.output, out_dir=parsed.out_dir)
+        except KeyboardInterrupt:
+            pipe.cancel()
+            print("[subtitle] cancelled")
+            return 130
+        print(json.dumps(rep.to_dict(), ensure_ascii=False, indent=2))
+        return 0
     elif parsed.command == "run":
         from pathlib import Path
         from ecoup.config import load_config

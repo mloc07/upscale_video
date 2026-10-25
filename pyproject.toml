@@ -21,6 +21,10 @@ dependencies = [
 dev = [
     "pytest>=7.0.0",
 ]
+subtitle = [
+    "faster-whisper>=1.0.0",
+    "google-genai>=1.0.0",
+]
 
 [project.scripts]
 ecoup = "ecoup.cli:main"
