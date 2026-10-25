@@ -21,6 +21,33 @@ class AsrResult:
     peak_vram_gb: Optional[float] = None
 
 
+def _preload_cuda12_libs() -> None:
+    """ctranslate2 needs CUDA 12 cuBLAS/cuDNN. When the system CUDA differs (e.g. Colab ships CUDA 13),
+    load the pip wheels ``nvidia-cublas-cu12`` / ``nvidia-cudnn-cu12`` by absolute path (Linux only)."""
+    import ctypes
+    import glob
+    import importlib.util
+    import os
+
+    if os.name != "posix":
+        return
+    for pkg, patterns in (("nvidia.cublas", ["libcublasLt.so.12", "libcublas.so.12"]),
+                          ("nvidia.cudnn", ["libcudnn.so.9"])):
+        try:
+            spec = importlib.util.find_spec(pkg)
+        except Exception:
+            spec = None
+        if not spec or not spec.submodule_search_locations:
+            continue
+        lib_dir = os.path.join(list(spec.submodule_search_locations)[0], "lib")
+        for pat in patterns:
+            for f in glob.glob(os.path.join(lib_dir, pat)):
+                try:
+                    ctypes.CDLL(f, mode=ctypes.RTLD_GLOBAL)
+                except OSError:
+                    pass
+
+
 def _load_wav_float32(path):
     """Read a 16-bit PCM mono WAV into a float32 numpy array in [-1, 1]."""
     import wave
@@ -62,6 +89,7 @@ class FasterWhisperBackend:
         if compute == "auto":
             compute = "float16" if device == "cuda" else "int8"
 
+        _preload_cuda12_libs()
         t0 = time.time()
         model = WhisperModel(cfg.model, device=device, compute_type=compute)
         peak = None
