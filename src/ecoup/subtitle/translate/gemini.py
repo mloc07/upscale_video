@@ -87,6 +87,7 @@ class GeminiTranslator:
         self.fallback = fallback
         self.should_cancel = should_cancel
         self._key: Optional[str] = None
+        self._model = cfg.model
         self.stats = {
             "requests": 0, "retries": 0, "cache_hits": 0,
             "blocked_batches": 0, "count_mismatches": 0, "failed_segments": 0, "fallback_segments": 0,
@@ -201,7 +202,7 @@ class GeminiTranslator:
         self.stats["requests"] += 1
         try:
             resp = client.models.generate_content(
-                model=self.cfg.model, contents=self._user_prompt(batch, before, after), config=config
+                model=self._model, contents=self._user_prompt(batch, before, after), config=config
             )
         except Exception as exc:  # noqa: BLE001 - classify below
             msg = _redact(str(exc), self._key)
@@ -244,18 +245,34 @@ class GeminiTranslator:
         return [by_id[i] for i in range(expected)]
 
     def _request_with_retry(self, batch, before, after, source_language) -> list[str]:
-        attempt = 0
-        while True:
-            if self.should_cancel and self.should_cancel():
-                raise TranslationError("cancelled")
-            try:
-                return self._call_api(batch, before, after, source_language)
-            except RetryableError:
-                if attempt >= self.cfg.max_retries:
-                    raise
-                self.stats["retries"] += 1
-                self._sleep(min(60.0, 2.0 ** attempt + 0.5))
-                attempt += 1
+        """Backoff on transient errors; when a model stays unavailable, switch to the next fallback model.
+
+        If every model is unavailable the run stops with a clear error (progress stays in the cache,
+        so re-running resumes) instead of silently leaving lines untranslated.
+        """
+        models = [self.cfg.model] + [m for m in self.cfg.fallback_models if m != self.cfg.model]
+        start = models.index(self._model) if self._model in models else 0
+        last_exc: Optional[Exception] = None
+        for model in models[start:]:
+            self._model = model
+            attempt = 0
+            while True:
+                if self.should_cancel and self.should_cancel():
+                    raise TranslationError("cancelled")
+                try:
+                    return self._call_api(batch, before, after, source_language)
+                except RetryableError as exc:
+                    last_exc = exc
+                    if attempt >= self.cfg.max_retries:
+                        self.stats["model_switches"] = self.stats.get("model_switches", 0) + 1
+                        break
+                    self.stats["retries"] += 1
+                    self._sleep(min(60.0, 2.0 ** attempt + 0.5))
+                    attempt += 1
+        raise TranslationError(
+            f"All translation models unavailable ({', '.join(models[start:])}); last error: {last_exc}. "
+            "Re-run later: finished batches are cached."
+        )
 
     # -------------------------------------------------------------- public API
     def translate(self, batch, context_before=(), context_after=(), source_language=None) -> list[TranslatedSegment]:

@@ -56,6 +56,7 @@ class SegmentConfig:
 class TranslateConfig:
     backend: str = "gemini"
     model: str = "gemini-3.1-flash-lite"   # verified via models.list (see docs/subtitle_notes.md)
+    fallback_models: list = field(default_factory=lambda: ["gemini-3.5-flash-lite", "gemini-2.5-flash-lite"])
     target_language: str = "vi"
     batch_size: int = 25               # segments per request
     context_segments: int = 3          # previous/next segments given as read-only context

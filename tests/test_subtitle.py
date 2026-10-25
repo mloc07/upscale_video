@@ -203,6 +203,28 @@ def test_translate_cache_hit_skips_api(monkeypatch, tmp_path):
     assert n["c"] == 1 and tr2.stats["cache_hits"] == 1 and out[2].text == "vi line 2"
 
 
+def test_unavailable_model_switches_to_fallback_then_errors(monkeypatch, tmp_path):
+    cfg = TranslateConfig(max_retries=1, fallback_models=["fb-model"], cache_dir=str(tmp_path))
+    tr = GeminiTranslator(cfg, client=object(), sleep=lambda _: None)
+    seen = []
+
+    def fake(batch, before, after, lang):
+        seen.append(tr._model)
+        if tr._model == cfg.model:
+            raise RetryableError("503")
+        return [f"vi {s.text}" for s in batch]
+
+    monkeypatch.setattr(tr, "_call_api", fake)
+    out = tr.translate(_segs(2))
+    assert [o.text for o in out] == ["vi line 0", "vi line 1"]
+    assert seen == [cfg.model, cfg.model, "fb-model"] and tr.stats["model_switches"] == 1
+
+    tr2 = GeminiTranslator(TranslateConfig(max_retries=0, fallback_models=["fb"]), client=object(), sleep=lambda _: None)
+    monkeypatch.setattr(tr2, "_call_api", lambda *a: (_ for _ in ()).throw(RetryableError("503")))
+    with pytest.raises(TranslationError, match="unavailable"):
+        tr2.translate(_segs(3))
+
+
 def test_auth_error_is_fatal(monkeypatch):
     tr, _ = _tr()
     monkeypatch.setattr(tr, "_call_api", lambda *a: (_ for _ in ()).throw(TranslationError("401")))
